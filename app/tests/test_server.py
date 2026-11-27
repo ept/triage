@@ -342,3 +342,47 @@ def test_background_threads_sync_and_analyse(tmp_path: Path, fake: FakeGateway) 
         assert analysis.result["needs_reply"] is True
     finally:
         env.app.close()
+
+
+def test_settings(setup: Setup) -> None:
+    assert setup.http.get("/api/settings").json() == {"apply_policy_automatically": False}
+    changed = setup.http.put("/api/settings", json={"apply_policy_automatically": True})
+    assert changed.json() == {"apply_policy_automatically": True}
+    assert setup.http.get("/api/settings").json() == {"apply_policy_automatically": True}
+    for bad in [{"apply_policy_automatically": "yes"}, {"unknown": True}]:
+        assert setup.http.put("/api/settings", json=bad).status_code == 400
+    assert setup.http.get("/api/settings").json() == {"apply_policy_automatically": True}
+
+
+def test_policy_is_applied_automatically_only_when_switched_on(setup: Setup) -> None:
+    setup.http.put("/api/policy", json={"text": "Move invoices to the archive."})
+    invoice = setup.app.store.search("invoice")[0]
+    setup.scripted.default = "No rule applies."
+
+    # Off by default: the model is not asked.
+    assert setup.app.apply_policy_to(invoice) is False
+    assert setup.scripted.requests == []
+
+    setup.http.put("/api/settings", json={"apply_policy_automatically": True})
+    setup.scripted.replies += [
+        Call("move_messages", {"ids": ["m1"], "destination": "archive"}),
+        "Moved, as the rule about invoices says.",
+    ]
+    assert setup.app.apply_policy_to(invoice) is True
+    assert len(setup.fake.accounts["work"].folders["Archive"].messages) == 1
+    listed = setup.http.get("/api/conversations").json()["conversations"]
+    assert [c["title"] for c in listed] == ["Automatic actions"]
+    activity_entries = setup.http.get("/api/activity").json()["entries"]
+    assert activity_entries[0]["summary"] == "Moved 1 message from INBOX to Archive"
+
+    # Mail that is old, already read, or outside the inbox is left alone.
+    asked = len(setup.scripted.requests)
+    old = setup.deliver(sender=ALEX, subject="Old invoice", text="x", date=NOW - timedelta(days=9))
+    del old
+    setup.app.sync.sync_all()
+    stale = setup.app.store.search("old invoice")[0]
+    assert setup.app.apply_policy_to(stale) is False
+    archived = setup.app.store.search("invoice 1042")[0]
+    assert archived.key.folder == "Archive"
+    assert setup.app.apply_policy_to(archived) is False
+    assert len(setup.scripted.requests) == asked

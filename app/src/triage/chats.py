@@ -188,6 +188,17 @@ class ChatStore:
             ).fetchone()
         return Conversation(row[0], row[1], _from_epoch_ms(row[2])) if row else None
 
+    def find_or_create(self, title: str) -> Conversation:
+        """The oldest conversation with this title, created if there is none."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT id, title, updated FROM conversations WHERE title = ? ORDER BY id LIMIT 1",
+                (title[:MAX_TITLE],),
+            ).fetchone()
+            if row is None:
+                return self.create(title)
+        return Conversation(row[0], row[1], _from_epoch_ms(row[2]))
+
     def set_title(self, conversation_id: int, title: str) -> None:
         title = " ".join(title.split())[:MAX_TITLE] or "Conversation"
         with self._lock:
@@ -256,6 +267,14 @@ class ChatStore:
                 (conversation_id,),
             ).fetchall()
         return [self._item(row) for row in rows]
+
+    def delete_items_from(self, conversation_id: int, first_item_id: int) -> None:
+        """Remove the items of a conversation from the given one on."""
+        with self._lock:
+            self._db.execute(
+                "DELETE FROM items WHERE conversation_id = ? AND id >= ?",
+                (conversation_id, first_item_id),
+            )
 
     def update_attachments(
         self,

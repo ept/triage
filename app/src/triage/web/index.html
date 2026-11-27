@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Email Triage</title>
+  <!-- An empty icon, so that the browser does not ask the server for one. -->
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar" aria-label="Navigation and status">
+      <h1 class="brand">Email Triage</h1>
+
+      <nav id="nav" aria-label="Sections">
+        <button type="button" class="nav-item" data-view="chat">Chat</button>
+        <button type="button" class="nav-item" data-view="activity">Activity</button>
+        <button type="button" class="nav-item" data-view="policy">
+          Policy <span class="badge" id="badge-policy" hidden></span>
+        </button>
+        <button type="button" class="nav-item" data-view="coding">
+          App changes <span class="badge" id="badge-coding" hidden></span>
+        </button>
+      </nav>
+
+      <section class="sidebar-section" aria-labelledby="conversations-heading">
+        <div class="section-head">
+          <h2 id="conversations-heading">Conversations</h2>
+          <button type="button" id="new-conversation" class="small">New</button>
+        </div>
+        <ul id="conversation-list" class="plain-list"></ul>
+      </section>
+
+      <section id="status" class="sidebar-section status" aria-labelledby="status-heading">
+        <div class="section-head">
+          <h2 id="status-heading">Status</h2>
+          <button type="button" id="sync-now" class="small">Sync now</button>
+        </div>
+        <div id="status-body" aria-live="polite"></div>
+      </section>
+    </aside>
+
+    <main id="main">
+      <div id="notices" role="alert"></div>
+      <div id="error-bar" class="error-bar" role="alert" hidden>
+        <span id="error-text"></span>
+        <button type="button" id="error-dismiss" class="small">Dismiss</button>
+      </div>
+
+      <section id="view-chat" class="view" aria-labelledby="chat-heading">
+        <header class="view-head"><h2 id="chat-heading">Chat</h2></header>
+        <div id="chat-items" class="chat-items" aria-live="polite"></div>
+        <form id="composer" class="composer">
+          <label for="composer-text" class="visually-hidden">Message</label>
+          <textarea id="composer-text" rows="2"
+            placeholder="Ask about your email, or ask for something to be done…"></textarea>
+          <button type="submit" id="composer-send">Send</button>
+          <p class="hint">
+            Answered by the model running on this computer. Your email does not leave it.
+            Enter sends, Shift+Enter starts a new line.
+          </p>
+        </form>
+      </section>
+
+      <section id="view-activity" class="view" aria-labelledby="activity-heading" hidden>
+        <header class="view-head">
+          <h2 id="activity-heading">Activity</h2>
+          <button type="button" id="activity-refresh" class="small">Refresh</button>
+        </header>
+        <p class="hint">Everything that has been changed in your mailboxes through this app.</p>
+        <ul id="activity-list" class="plain-list activity-list"></ul>
+      </section>
+
+      <section id="view-policy" class="view" aria-labelledby="policy-heading" hidden>
+        <header class="view-head"><h2 id="policy-heading">Policy</h2></header>
+        <p class="hint">
+          Your rules for what should happen with your email. The policy stays on this computer.
+        </p>
+        <div id="policy-proposals"></div>
+        <label for="policy-text" class="visually-hidden">Policy text</label>
+        <textarea id="policy-text" class="policy-text" rows="14" spellcheck="true"></textarea>
+        <div class="row">
+          <button type="button" id="policy-save">Save</button>
+          <span id="policy-updated" class="hint"></span>
+        </div>
+        <label class="row setting" for="policy-automatic">
+          <input type="checkbox" id="policy-automatic">
+          Apply the policy to new mail automatically
+        </label>
+        <p class="hint">
+          When this is on, the model on this computer reads each new message that arrives in
+          your inbox and carries out the rule that applies, if any. What it did appears in the
+          conversation “Automatic actions” and under Activity, where it can be undone.
+        </p>
+        <h3>Earlier versions</h3>
+        <ul id="policy-history" class="plain-list"></ul>
+        <div id="policy-version" class="policy-version" hidden>
+          <div class="row">
+            <strong id="policy-version-title"></strong>
+            <button type="button" id="policy-restore" class="small">Restore this version</button>
+            <button type="button" id="policy-version-close" class="small">Close</button>
+          </div>
+          <pre id="policy-version-text"></pre>
+        </div>
+      </section>
+
+      <section id="view-coding" class="view" aria-labelledby="coding-heading" hidden>
+        <header class="view-head"><h2 id="coding-heading">App changes</h2></header>
+        <p class="hint">
+          Changes to the app itself are made by a coding agent that uses a remote model. It never
+          sees your email. Every message to it must be approved by you in the Email Triage window
+          outside this page before it is sent.
+        </p>
+        <h3>Requests</h3>
+        <ul id="coding-requests" class="plain-list"></ul>
+        <h3>Coding agent</h3>
+        <div id="coding-output" class="coding-output" aria-live="polite"></div>
+        <form id="coding-form" class="composer">
+          <label for="coding-text" id="coding-label">Ask for a change to the app</label>
+          <textarea id="coding-text" rows="3"></textarea>
+          <button type="submit" id="coding-send">Request approval</button>
+          <p class="hint">
+            This text leaves this computer and is sent to a remote model once you have approved it.
+            Do not include anything from your email that you want to keep private.
+          </p>
+        </form>
+      </section>
+    </main>
+
+    <aside id="viewer" class="viewer" aria-label="Message" hidden></aside>
+  </div>
+</body>
+</html>

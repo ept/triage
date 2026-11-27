@@ -138,11 +138,17 @@ class Analyser:
         )
         return validate(_parse_json(result.text))
 
-    def run_pending(self, limit: int = 20, should_stop: Callable[[], bool] = lambda: False) -> int:
+    def run_pending(
+        self,
+        limit: int = 20,
+        should_stop: Callable[[], bool] = lambda: False,
+        on_analysed: Callable[[MessageSummary], None] | None = None,
+    ) -> int:
         """Analyse up to ``limit`` messages that have not been looked at, newest first.
 
-        Returns the number of messages dealt with. Raises :class:`LlmError` if the model is
-        unavailable, so that the caller can wait before trying again.
+        Returns the number of messages dealt with, and calls ``on_analysed`` for each one that
+        the model has described. Raises :class:`LlmError` if the model is unavailable, so that
+        the caller can wait before trying again.
         """
         skipped_folders = {
             (f.account, f.name) for f in self.store.folders() if f.role in SKIPPED_ROLES
@@ -166,4 +172,6 @@ class Analyser:
                 break
             self.store.set_analysis(key, ANALYSER, result or {"failed": True})
             done += 1
+            if result is not None and on_analysed is not None:
+                on_analysed(summary)
         return done

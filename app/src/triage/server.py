@@ -18,7 +18,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Iterator, Mapping
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -37,13 +37,16 @@ from triage.gateway import GatewayClient, GatewayError, NotFoundError
 from triage.llm import LlmClient, LlmError
 from triage.mime import split_quoted
 from triage.policy import PolicyError, PolicyStore
-from triage.store import Store
+from triage.settings import SettingsStore
+from triage.store import MessageSummary, Store
 from triage.sync import SyncEngine, SyncSnapshot
 
 logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent / "web"
 SYNC_INTERVAL = 300.0
+#: The policy is applied automatically only to mail that arrived this recently.
+AUTOMATIC_MAX_AGE = timedelta(days=2)
 MAX_CHAT_TEXT = 20_000
 
 #: For the document that shows an HTML email inside a sandboxed frame: nothing is loaded from
@@ -133,6 +136,7 @@ class App:
         self.store = Store(cache_dir)
         self.chats = ChatStore(cache_dir or self.store.cache_dir)
         self.policy = PolicyStore(config_dir)
+        self.settings = SettingsStore(config_dir)
         self.sync = SyncEngine(self.gateway, self.store)
         self.analyser = Analyser(self.llm, self.store, user_name=self._user_name)
         self._sync_wanted = threading.Event()
@@ -193,8 +197,13 @@ class App:
         while not self._stopping.wait(2):
             if self._agent_lock.locked():
                 continue  # the user's question comes first
+            fresh: list[MessageSummary] = []
             try:
-                done = self.analyser.run_pending(limit=5, should_stop=self._agent_lock.locked)
+                done = self.analyser.run_pending(
+                    limit=5, should_stop=self._agent_lock.locked, on_analysed=fresh.append
+                )
+                for summary in fresh:
+                    self.apply_policy_to(summary)
             except LlmError:
                 self._stopping.wait(30)
                 continue
@@ -204,6 +213,27 @@ class App:
                 continue
             if done == 0:
                 self._stopping.wait(20)
+
+    def apply_policy_to(self, summary: MessageSummary) -> bool:
+        """Apply the policy to a message that has just arrived, if the user wants that.
+
+        Only unread mail that reached the inbox recently is considered, so that switching the
+        setting on does not set the model loose on everything that is already there.
+        """
+        if not self.settings.get().apply_policy_automatically:
+            return False
+        key = summary.key
+        folder = self.store.folder(key.account, key.folder)
+        recent = summary.internal_date >= datetime.now(UTC) - AUTOMATIC_MAX_AGE
+        if folder is None or folder.role != "inbox" or summary.seen or not recent:
+            return False
+        # The user's own questions come first; wait for the assistant to be free.
+        if not self._agent_lock.acquire(timeout=300):
+            return False
+        try:
+            return self.agent.apply_policy(key)
+        finally:
+            self._agent_lock.release()
 
     def _events_loop(self) -> None:
         seq = 0
@@ -330,6 +360,7 @@ class App:
             Route("/api/policy/history", self.policy_history),
             Route("/api/policy/history/{version}", self.policy_version),
             Route("/api/policy/proposals/{proposal_id}", self.decide_proposal, methods=["POST"]),
+            Route("/api/settings", self.settings_endpoint, methods=["GET", "PUT"]),
             Route("/api/coding", self.coding),
             Route("/api/coding/requests", self.coding_request, methods=["POST"]),
             Route("/api/{rest:path}", self.not_found, methods=["GET", "POST", "PUT", "DELETE"]),
@@ -600,6 +631,15 @@ class App:
             raise Problem(400, "bad_request", "accept must be true or false.")
         self.policy.decide(request.path_params["proposal_id"], accept)
         return JSONResponse({})
+
+    async def settings_endpoint(self, request: Request) -> Response:
+        if request.method == "PUT":
+            try:
+                self.settings.update(await self._body(request))
+            except ValueError as exc:
+                raise Problem(400, "bad_request", str(exc)) from exc
+        current = self.settings.get()
+        return JSONResponse({"apply_policy_automatically": current.apply_policy_automatically})
 
     # -- coding agent
 
