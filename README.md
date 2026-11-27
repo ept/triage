@@ -222,9 +222,11 @@ How the date in that line is written depends on the settings of your Mac, which 
 sandbox cannot see. The app therefore copies the form used by the newest replies in your sent
 mail, and uses the time zone that your browser reports.
 
-This layout has been written from what Apple Mail is known to do, **not compared with real
-mail**. To compare it with yours without showing your mail to anybody, run this while
-`triage up` is running:
+This layout has been compared with several hundred replies written by Mail 16 on a Mac (set to
+British English with a 24-hour clock), and matches them in the form of the line above the
+quotation, the quote marks and the empty lines. It has not been compared with other versions or
+settings. To compare it with your own sent mail without showing that mail to anybody, run this
+while `triage up` is running:
 
 ```sh
 docker exec triage-app /opt/venv/bin/python -m triage.reply_report

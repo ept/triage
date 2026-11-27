@@ -113,6 +113,8 @@ def test_learning_the_style_from_sent_mail() -> None:
 def test_quoting() -> None:
     assert quote("one\n\ntwo  \n> older\n>> oldest\n") == ("> one\n> \n> two\n>> older\n>>> oldest")
     assert quote("\r\nwindows\r\nlines\r\n") == "> windows\n> lines"
+    # Empty quoted lines end with a space at every depth, however the original wrote them.
+    assert quote("a\n> \n>\n>>\n>> b") == "> a\n>> \n>> \n>>> \n>>> b"
     assert quote("") == "> "
 
 

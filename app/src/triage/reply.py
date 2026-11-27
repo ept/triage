@@ -9,9 +9,12 @@ The layout follows what Apple Mail writes when it sends a reply as plain text::
     > What Alice wrote.
     >> What Alice had quoted.
 
-(An empty quoted line is ``"> "``, with the space.) How the date in the first quoted line is
-written depends on the settings of the user's Mac, which the email sandbox cannot see. It is
-therefore learnt from the replies in the user's own sent mail (:func:`learn_style`).
+(An empty quoted line ends with a space: ``"> "``, ``">> "``.) This has been compared, with
+``triage.reply_report``, with several hundred replies written by Mail 16 on a Mac.
+
+How the date in the first quoted line is written depends on the settings of the user's Mac,
+which the email sandbox cannot see. It is therefore learnt from the replies in the user's own
+sent mail (:func:`learn_style`).
 
 Drafts are plain text (the gateway accepts nothing else), so a message that only has an HTML
 body is quoted as its text.
@@ -249,10 +252,16 @@ def visible(text: str) -> str:
 
 def quote(text: str) -> str:
     """Put a quote mark in front of every line, as a mail program does when replying."""
-    lines = visible(text).strip("\n").split("\n")
-    return "\n".join(
-        f">{line.rstrip()}" if line.startswith(">") else f"> {line.rstrip()}" for line in lines
-    )
+    return "\n".join(map(_quoted, visible(text).strip("\n").split("\n")))
+
+
+def _quoted(line: str) -> str:
+    line = line.rstrip()
+    if not line.startswith(">"):
+        return f"> {line}"
+    # A line that was quoted before gets one more mark, directly in front of the others.
+    # Apple Mail ends an empty quoted line with a space at every depth ("> ", ">> ").
+    return f">{line} " if set(line) == {">"} else f">{line}"
 
 
 def with_quote(reply: str, introduction: str, original: str, limit: int = MAX_DRAFT_CHARS) -> str:
