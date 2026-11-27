@@ -48,6 +48,9 @@ enum Message {
     /// The user wants to quit (from the menu, which only macOS has).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Quit,
+    /// The user wants the app's window loaded afresh (from the menu).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Reload,
     /// The sandboxes have been stopped after the user quit.
     Stopped,
 }
@@ -207,11 +210,21 @@ fn menu_bar(wake: EventLoopProxy<Message>) -> Option<muda::Menu> {
         &PredefinedMenuItem::select_all(None),
     ])
     .ok()?;
-    menu.append_items(&[&app, &edit]).ok()?;
+    let view = Submenu::new("View", true);
+    let reload = MenuItem::with_id(
+        "reload",
+        "Reload",
+        true,
+        Some(Accelerator::new(Modifiers::META, Code::KeyR)),
+    );
+    view.append(&reload).ok()?;
+    menu.append_items(&[&app, &edit, &view]).ok()?;
     menu.init_for_nsapp();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         if event.id() == "quit" {
             wake.send_event(Message::Quit).ok();
+        } else if event.id() == "reload" {
+            wake.send_event(Message::Reload).ok();
         }
     }));
     Some(menu)
@@ -324,6 +337,13 @@ impl Windows {
                 self.show_status(target);
             }
             Message::Quit => self.quit(),
+            Message::Reload => {
+                // Only the app's window, and only once it shows the app: its address stays
+                // within the app, which is all the window can load.
+                if let (Some(pane), None) = (&self.app, &self.waiting_to_load) {
+                    pane.webview.reload().ok();
+                }
+            }
             Message::Stopped => return true,
         }
         false
