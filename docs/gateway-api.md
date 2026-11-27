@@ -5,12 +5,12 @@ The gateway (`trusted/gateway`) is the email sandbox's only network peer. This d
 contract between the gateway and the app running in the email sandbox (`app/`). The gateway is part
 of the trusted base, so changes to this contract need review by the user (see `SPEC.md`).
 
-The gateway has two listeners:
+The gateway has three listeners:
 
 * the **sandbox API**, reachable only from the email sandbox, described in the first part of this
   document;
-* the **host listener**, published on the host's loopback interface and used only by the wrapper
-  app. It carries the control API and the relay to the app's web interface.
+* the **control API** and the **web interface relay**, two separate ports published on the host's
+  loopback interface and used only by the wrapper app. They are described at the end.
 
 Conventions
 -----------
@@ -244,7 +244,10 @@ defaults to 0, `limit` to 500 (maximum 1000).
  "last_seq": 4}
 ```
 
-The log contains no message content. It can only be appended to by the gateway.
+The log contains no message content. It can only be appended to by the gateway. If the IMAP
+server failed while carrying out an operation, the entry has an additional `error` field with the
+failure message, since the change may have been applied in part. Requests that the gateway refused
+are not logged.
 
 Change requests and the coding agent
 ------------------------------------
@@ -314,21 +317,24 @@ events:
 Kinds: `accounts_changed` (the account list was changed by the user), `deletion_rate` (the user
 has been warned about a high deletion rate), `change_request` (with `id` and the new `state`).
 
-Host listener
--------------
+Host listeners
+--------------
 
-Everything on the host listener requires the secret that the wrapper app generated when it started
-the gateway (environment variable `TRIAGE_HOST_TOKEN`). Requests whose `Host` header is not a
-loopback address are rejected, to defeat DNS rebinding.
+The control API and the web interface relay listen on separate ports, each protected by its own
+secret, which the wrapper app generates when it starts the gateway (environment variables
+`TRIAGE_CONTROL_TOKEN` and `TRIAGE_UI_TOKEN`). The secrets are different so that the app's own
+code, which runs in the web view, cannot use the control API. On both ports, requests whose `Host`
+header is not a loopback address are rejected, to defeat DNS rebinding.
 
-### Control API (`Authorization: Bearer <token>`)
+### Control API (`Authorization: Bearer <control token>`)
 
 * `PUT /control/v1/accounts` — replaces the account configuration, including credentials, which
   the gateway keeps only in memory. Body: `{"accounts": [AccountConfig, ...]}` (see
   `trusted/gateway/src/config.rs`).
-* `PUT /control/v1/llm` — `{"base_url": "http://host.docker.internal:8012", "api_key": "..."}`.
-* `GET /control/v1/status` — connection state of each account, deletion rate warnings, and the
-  number of pending change requests.
+* `PUT /control/v1/llm` — `{"base_url": "http://host.docker.internal:8012", "api_key": "..."}`,
+  or `{}` to remove the configuration.
+* `GET /control/v1/status` — the last error of each account, deletion rate warnings, whether an
+  LLM is configured, and the number of pending change requests.
 * `GET /control/v1/change-requests?state=pending` — change requests including their full text.
 * `POST /control/v1/change-requests/<id>/decision` — `{"approve": true}`. The wrapper app then
   delivers the approved text to the coding sandbox itself.
@@ -337,10 +343,18 @@ loopback address are rejected, to defeat DNS rebinding.
 
 ### Web interface relay
 
-All other paths on the host listener are relayed to the app's web server in the email sandbox
-(`TRIAGE_APP_URL`, e.g. `http://app:8080`), including WebSocket and streaming responses, provided
-that the request carries the session cookie. The wrapper app obtains the cookie by loading
-`/_triage/session?token=<token>` in the web view, which sets an `HttpOnly`, `SameSite=Strict`
-cookie and redirects to `/`.
+All requests on this port are relayed to the app's web server in the email sandbox
+(`TRIAGE_APP_URL`, e.g. `http://app:8080`), provided that they carry the session cookie.
+Streaming responses (e.g. server-sent events) are passed through; WebSocket connections are not
+supported. The wrapper app obtains the cookie by loading `/_triage/session?token=<ui token>` in
+the web view, which sets an `HttpOnly`, `SameSite=Strict` cookie and redirects to `/`. Paths
+starting with `/_triage/` are reserved.
+
+The gateway adds a `Content-Security-Policy` header to every relayed response, which forbids
+loading anything from, or connecting to, any origin other than the app itself (see
+`CONTENT_SECURITY_POLICY` in `trusted/gateway/src/host.rs`). In particular, scripts and
+stylesheets must be served by the app as files (inline scripts are blocked; inline styles are
+allowed), images may also be `data:` or `blob:` URLs, and frames may only show the app's own pages
+or `blob:` URLs.
 
 The app must serve its web interface on port 8080 over plain HTTP, using only relative URLs.
