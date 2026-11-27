@@ -17,6 +17,8 @@ from triage.testing.samples import USER, make_message
 
 NOW = datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
 APPLE = ("X-Mailer", "Apple Mail (2.3826.700.81)")
+# Newer versions of Mail on a Mac state their version only here.
+MAC = ("MIME-Version", "1.0 (Mac OS X Mail 16.0 \\(3826.700.81\\))")
 
 # Everything that comes from a "message" in these tests contains the word SECRET (in some
 # spelling), so that one check shows that nothing of a message reaches the report.
@@ -50,7 +52,7 @@ def fill(fake: FakeGateway, client: GatewayClient, store: Store) -> None:
         fake.add_message("work", folder, raw, internal_date=NOW)
 
     for _ in range(3):
-        sent(text=PLAIN_REPLY, in_reply_to="<secret-1@secret.example>", headers=[APPLE])
+        sent(text=PLAIN_REPLY, in_reply_to="<secret-1@secret.example>", headers=[MAC])
     sent(
         text=PLAIN_REPLY,
         html=HTML_REPLY,
@@ -62,14 +64,20 @@ def fill(fake: FakeGateway, client: GatewayClient, store: Store) -> None:
     sent(
         text="Secret!\n\nAm 03.09.2026 um 09:05 schrieb Secretname <secret@secret.example>:\n> Geheim\n",
         in_reply_to="<secret-3@secret.example>",
-        headers=[APPLE],
+        headers=[MAC],
     )
-    # Not a reply; and one written by something else.
-    sent(text="A new secret message.\n", headers=[APPLE])
+    # Not a reply; one written by a program that is not known (described all the same, in
+    # case it is Mail after all); and one written on a phone, which is left out.
+    sent(text="A new secret message.\n", headers=[MAC])
     sent(
         text=PLAIN_REPLY,
         in_reply_to="<secret-4@secret.example>",
-        headers=[("X-Mailer", "Secret Mail 1.0")],
+        headers=[("User-Agent", "Secret Mail 1.0")],
+    )
+    sent(
+        text="Secret.\n\n> On 3 Sep 2026, at 9:05 am, Secretname <s@secret.example> wrote:\n> Hi\n",
+        in_reply_to="<secret-5@secret.example>",
+        headers=[("X-Mailer", "iPhone Mail (23G90)")],
     )
     sent(
         folder="Drafts", text="A secret draft.\n", headers=[("X-Uniform-Type-Identifier", "secret")]
@@ -81,27 +89,40 @@ def fill(fake: FakeGateway, client: GatewayClient, store: Store) -> None:
 def test_what_the_report_finds(fake: FakeGateway, client: GatewayClient, store: Store) -> None:
     fill(fake, client, store)
     found = report(store)
-    assert found.messages == 7
-    assert found.replies == 5
-    assert found.mailers["Apple Mail (2.3826.700.81)"] == 6
-    assert found.mailers["another program, or not stated"] == 1
-    assert found.structures["text/plain"] == 4
+    assert found.messages == 8
+    assert found.replies == 6
+    assert found.mailers == {
+        "Mail on a Mac, version 16.0 (3826.700.81), going by Mime-Version": 5,
+        "Apple Mail (2.3826.700.81)": 1,
+        "another program": 1,
+        "iPhone Mail (23G90)": 1,
+    }
+    assert found.mailer_shapes == {
+        "(no such field)": 5,
+        "Apple Mail (9.9999.999.99)": 1,
+        "Xx Mail 9.9": 1,
+        "iPhone Mail (99Xx99)": 1,
+    }
+    assert found.version_shapes == {
+        "9.9 (Mac OS X Mail 99.9 \\(9999.999.99\\))": 5,
+        "9.9": 3,
+    }
     assert found.structures == {
-        "text/plain": 4,
+        "text/plain": 5,
         "multipart/mixed(multipart/alternative(text/plain, text/html), application/*)": 1,
     }
-    assert found.recognised == {"day first, 24-hour clock": 4}
+    assert found.recognised == {"day first, 24-hour clock": 5}
     assert found.unrecognised == {"Am 99.99.9999 um 99:99 schrieb Xx <ADDR>:": 1}
-    assert found.months == {"Sept": 4}
-    assert found.padded_hours == {"09": 4}
-    assert found.who == {"Xx Xx <ADDR>": 4}
-    assert found.depth == {"1": 4, "0": 1}
-    assert found.blank_before == {"1": 5}
-    assert found.line_after["an empty quoted line, written '> '"] == 4
+    assert found.months == {"Sept": 5}
+    assert found.padded_hours == {"09": 5}
+    assert found.who == {"Xx Xx <ADDR>": 5}
+    assert found.depth == {"1": 5, "0": 1}
+    assert found.blank_before == {"1": 6}
+    assert found.line_after["an empty quoted line, written '> '"] == 5
     assert found.line_after["quoted text"] == 1
-    assert found.after_quote == {"nothing": 5}
-    assert found.prefixes == {"'> '": 9, "'>> '": 4}
-    assert found.empty_prefixes == {"'> '": 4, "'>> '": 4}
+    assert found.after_quote == {"nothing": 6}
+    assert found.prefixes == {"'> '": 11, "'>> '": 5}
+    assert found.empty_prefixes == {"'> '": 5, "'>> '": 5}
     assert found.draft_messages == 1
     assert "x-uniform-type-identifier" in found.draft_header_names
     assert "x-secret-header" in found.header_names, "names of header fields are shown"
@@ -130,7 +151,7 @@ def test_the_report_reveals_nothing_of_the_mail(
     fill(fake, client, store)
     assert main(["--cache-dir", str(store.cache_dir)]) == 0
     text = capsys.readouterr().out
-    assert "Replies written by Apple Mail on a Mac, described below: 5" in text
+    assert "(all but those written on an iPhone or iPad): 6" in text
     assert "On 9 Sept 9999" not in text, "known forms are counted, not shown"
     leaks = [
         line

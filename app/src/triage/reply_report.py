@@ -11,7 +11,9 @@ app's drafts look like the replies that the user's own mail program writes.
 
 * counts;
 * names of MIME types, of their parameters, and of header fields (never a header's value,
-  except the version of the mail program and the encoding labels of a body part);
+  except the version of the mail program, the encoding labels of a body part, and the shape
+  of the fields that name the mail program, in which the words of :data:`MAILER_WORDS` are
+  kept);
 * the names of HTML elements and attributes, and the values of a few layout attributes
   (``type``, ``dir``, the character set declared by a ``meta`` element, classes that mail
   programs are known to write, and in a ``style`` the settings that are plain keywords or
@@ -142,6 +144,11 @@ _ADDRESS = re.compile(r"<[^<>]*>|\S*@\S*")
 _WORD = re.compile(r"[^\W\d_]+")
 _QUOTE_PREFIX = re.compile(r"\A(?:>[ \t]?)*")
 _MAILER = re.compile(r"\A(Apple Mail|iPhone Mail|iPad Mail) \(([0-9A-Za-z.]{1,24})\)\Z")
+# Mail on a Mac states its version in a comment of the Mime-Version field; newer versions
+# state it nowhere else.
+_MAC_MAIL = re.compile(r"\(Mac OS X Mail ([0-9.]{1,12}) \\?\(([0-9.]{1,30})\\?\)\)")
+MAILER_WORDS = frozenset({"Apple", "Mac", "OS", "X", "Mail", "iPhone", "iPad", "iOS", "macOS"})
+"""Words that are shown in the shape of a field that names the mail program."""
 _LABEL = re.compile(r"\A[a-z0-9_.+-]{1,24}\Z")
 _HEADER_NAME = re.compile(r"\A[a-z0-9-]{1,40}\Z")
 _ATTRIBUTE_NAME = re.compile(r"\A[a-z0-9:_-]{1,30}\Z")
@@ -175,13 +182,13 @@ _ENCODINGS = frozenset({"7bit", "8bit", "binary", "quoted-printable", "base64"})
 MAX_HTML_NODES = 20_000
 
 
-def shape(line: str) -> str:
+def shape(line: str, kept: frozenset[str] = KEPT_WORDS) -> str:
     """The shape of a line: what kind of thing stands where, but not what it says."""
     text = _ADDRESS.sub(lambda match: "<ADDR>" if match[0].startswith("<") else "ADDR", line)
 
     def word(match: re.Match[str]) -> str:
         found = match[0]
-        if found in KEPT_WORDS or found == "ADDR":
+        if found in kept or found == "ADDR":
             return found
         if found.isupper() and len(found) > 1:
             return "XX"
@@ -445,6 +452,8 @@ def _raw_text(part: Message) -> str:
 class Report:
     messages: int = 0
     mailers: Counter[str] = field(default_factory=Counter)
+    mailer_shapes: Counter[str] = field(default_factory=Counter)
+    version_shapes: Counter[str] = field(default_factory=Counter)
     replies: int = 0
     structures: Counter[str] = field(default_factory=Counter)
     plain_parameters: Counter[str] = field(default_factory=Counter)
@@ -479,12 +488,20 @@ class Report:
     def add_sent(self, raw: bytes) -> None:
         message, _ = mime._parse_structure(raw)
         self.messages += 1
-        mailer = _MAILER.match(str(mime._safe(lambda: message.get("X-Mailer", ""), "")).strip())
-        self.mailers[
-            f"{mailer[1]} ({mailer[2]})" if mailer else "another program, or not stated"
-        ] += 1
-        if mailer is None or mailer[1] != "Apple Mail":
-            return
+        stated = _header(message, "X-Mailer") or _header(message, "User-Agent")
+        version = _header(message, "Mime-Version")
+        self.mailer_shapes[shape(stated, MAILER_WORDS) if stated else "(no such field)"] += 1
+        self.version_shapes[shape(version, MAILER_WORDS) if version else "(no such field)"] += 1
+        mailer = _MAILER.match(stated)
+        mac = _MAC_MAIL.search(version)
+        if mailer is not None:
+            self.mailers[f"{mailer[1]} ({mailer[2]})"] += 1
+            if mailer[1] != "Apple Mail":
+                return  # written on a phone or a tablet, where replies are laid out differently
+        elif mac is not None:
+            self.mailers[f"Mail on a Mac, version {mac[1]} ({mac[2]}), going by Mime-Version"] += 1
+        else:
+            self.mailers["another program" if stated else "not stated"] += 1
         if not mime._safe(lambda: message.get("In-Reply-To"), None):
             return
         self.replies += 1
@@ -561,7 +578,12 @@ class Report:
             f"Sent messages looked at: {self.messages}",
         ]
         out += _table("Written by", self.mailers)
-        out.append(f"Replies written by Apple Mail on a Mac, described below: {self.replies}")
+        out += _table("X-Mailer or User-Agent field (shape)", self.mailer_shapes, limit=6)
+        out += _table("Mime-Version field (shape)", self.version_shapes, limit=6)
+        out += [
+            "",
+            f"Replies described below (all but those written on an iPhone or iPad): {self.replies}",
+        ]
         out += _table("Structure", self.structures)
         out += _table("text/plain: parameters", self.plain_parameters)
         out += _table("text/plain: transfer encoding", self.plain_encodings)
@@ -587,6 +609,11 @@ class Report:
         out += ["", f"Messages in the drafts folders: {self.draft_messages}"]
         out += _table("Header fields of drafts (names only)", self.draft_header_names, limit=40)
         return "\n".join(out) + "\n"
+
+
+def _header(message: Message, name: str) -> str:
+    """The value of a header field on one line, or "" if the message has no such field."""
+    return " ".join(str(mime._safe(lambda: message.get(name, ""), "") or "").split())[:300]
 
 
 def _header_names(message: Message) -> set[str]:

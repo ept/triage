@@ -8,3 +8,5 @@ __pycache__/
 .hypothesis/
 node_modules/
 .DS_Store
+# Output of tools run over real mail (such as triage.reply_report) must never be committed.
+*.log
