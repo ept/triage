@@ -799,6 +799,9 @@ class FakeGateway:
                 )
             if _has_control_chars(text, allowed="\n\t"):
                 raise ApiError("bad_request", "text contains control characters")
+            if any(_is_invisible(c) for c in text):
+                # The user must be able to see everything that they approve.
+                raise ApiError("forbidden", "the text contains an invisible character")
             pending = sum(1 for r in self.change_requests.values() if r.state == "pending")
             if pending >= MAX_PENDING_CHANGE_REQUESTS:
                 raise ApiError("forbidden", "too many change requests are pending")
@@ -843,6 +846,24 @@ class FakeGateway:
 
 # --------------------------------------------------------------------------------------------
 # Request validation
+
+
+def _is_invisible(char: str) -> bool:
+    """Characters that take up no space or change how the text around them is displayed.
+
+    A simplified version of the gateway's rule (``trusted/gateway/src/rules.rs``).
+    """
+    code = ord(char)
+    return (
+        code in (0x00AD, 0x034F, 0x061C, 0x3164, 0xFEFF)
+        or 0x200B <= code <= 0x200F
+        or 0x2028 <= code <= 0x202E
+        or 0x2060 <= code <= 0x206F
+        or 0xFE00 <= code <= 0xFE0F
+        or 0xE000 <= code <= 0xF8FF
+        or 0xE0000 <= code <= 0xE0FFF
+        or code >= 0xF0000
+    )
 
 
 def _require_method(method: str, expected: str) -> None:

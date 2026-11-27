@@ -6,12 +6,15 @@ requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28",
     "nh3>=0.3",
+    "starlette>=0.40",
+    "uvicorn>=0.30",
 ]
 
 [dependency-groups]
 dev = [
     "hypothesis>=6.130",
     "mypy>=1.15",
+    "playwright>=1.48",
     "pytest>=8.3",
     "ruff>=0.11",
 ]
@@ -32,6 +35,10 @@ exclude-newer = "2026-11-19T00:00:00Z"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+filterwarnings = [
+    # Starlette's test client still works with httpx, which is what the app itself uses.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 
 [tool.ruff]
 line-length = 100
