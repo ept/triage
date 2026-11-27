@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["gateway"]
+members = ["gateway", "host"]
 
 [workspace.package]
 edition = "2024"
