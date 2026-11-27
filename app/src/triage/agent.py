@@ -42,6 +42,7 @@ from triage.gateway import (
 from triage.llm import ChatResult, LlmClient, LlmError, LlmUnavailableError, ToolCall
 from triage.mime import split_quoted
 from triage.policy import PolicyError, PolicyStore
+from triage.reply import ReplyStyle, attribution_line, style_of_account, time_zone, with_quote
 from triage.store import MessageKey, MessageSummary, StaleFolderError, Store, StoredMessage
 
 MAX_STEPS = 12
@@ -59,6 +60,8 @@ BATCH_SCREEN_SIZE = 20
 BATCH_SCREEN_MIN = 5
 BATCH_MAX = 100
 BATCH_STEPS = 4
+STYLE_LIFETIME = timedelta(hours=1)
+"""How long the layout learnt from the user's sent mail is used before it is learnt again."""
 # Room for an answer, and for the thinking that precedes it, in tokens (see LlmClient).
 ANSWER_TOKENS = 2000
 THINKING_TOKENS = 800
@@ -183,10 +186,13 @@ TOOLS: list[dict[str, Any]] = [
     _function(
         "draft_reply",
         "Write a reply to a message and save it in the drafts folder. It is not sent; the user "
-        "reviews and sends it.",
+        "reviews and sends it. The message replied to is quoted below the reply automatically.",
         {
             "id": {"type": "string", "description": "The message to reply to"},
-            "body": {"type": "string", "description": "The text of the reply, plain text"},
+            "body": {
+                "type": "string",
+                "description": "Only the new text of the reply, plain text, without a quotation",
+            },
             "reply_all": {"type": "boolean"},
         },
         ["id", "body"],
@@ -466,7 +472,9 @@ class Agent:
         policy: PolicyStore,
         clock: Callable[[], datetime] | None = None,
         on_mail_changed: Callable[[], None] | None = None,
+        time_zone: Callable[[], str] | None = None,
     ):
+        """``time_zone`` returns the name of the user's time zone, or "" if it is not known."""
         self.llm = llm
         self.store = store
         self.gateway = gateway
@@ -474,7 +482,28 @@ class Agent:
         self.policy = policy
         self._clock = clock or (lambda: datetime.now(UTC))
         self._on_mail_changed = on_mail_changed or (lambda: None)
+        self._time_zone = time_zone or (lambda: "")
+        self._reply_styles: dict[str, tuple[datetime, ReplyStyle | None]] = {}
         self._stop = threading.Event()
+
+    def quoted_reply(self, text: str, message: StoredMessage) -> str:
+        """The body of a reply to ``message``: ``text`` on top, the message quoted below."""
+        account = message.key.account
+        now = self._clock()
+        learnt = self._reply_styles.get(account)
+        if learnt is None or now - learnt[0] > STYLE_LIFETIME:
+            # Sent mail keeps arriving, and with it better evidence of how the user's mail
+            # program writes; a failure to read it must not get in the way of the draft.
+            style = None
+            with contextlib.suppress(Exception):
+                style = style_of_account(self.store, account)
+            learnt = (now, style)
+            self._reply_styles[account] = learnt
+        sender = next(iter(message.from_ or message.sender), None)
+        introduction = attribution_line(
+            sender, message.date or message.timestamp, time_zone(self._time_zone()), learnt[1]
+        )
+        return with_quote(text, introduction, message.body)
 
     def stop(self) -> None:
         """Ask the run that is in progress to end as soon as it can (from another thread)."""
@@ -1125,7 +1154,7 @@ class _Context:
             to=to,
             cc=cc,
             subject=subject[:500],
-            body=body,
+            body=self.agent.quoted_reply(body, message),
             in_reply_to=MessageRef(key.folder, key.uid_validity, key.uid),
         )
         names = ", ".join(r.address for r in [*to, *cc])

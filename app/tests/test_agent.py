@@ -14,6 +14,7 @@ from triage.agent import TOOLS, Agent, AgentEvent, build_context, neutralise
 from triage.chats import ChatStore
 from triage.gateway import GatewayClient
 from triage.llm import LlmClient
+from triage.mime import parse_message
 from triage.policy import PolicyStore
 from triage.store import Store
 from triage.sync import SyncEngine
@@ -40,6 +41,7 @@ class Setup:
         self.chats = ChatStore(tmp_path / "cache")
         self.policy = PolicyStore(tmp_path / "config")
         self.mail_changed = 0
+        self.time_zone = ""
         self.agent = Agent(
             llm=self.llm,
             store=store,
@@ -48,6 +50,7 @@ class Setup:
             policy=self.policy,
             clock=lambda: NOW,
             on_mail_changed=self._changed,
+            time_zone=lambda: self.time_zone,
         )
         self.conversation = self.chats.create().id
 
@@ -284,6 +287,93 @@ def test_drafting_a_reply(setup: Setup) -> None:
     assert "Subject: Re: Lunch on Thursday?" in raw
     assert "Thursday works for me." in raw
     assert setup.mail_changed == 1
+
+
+def draft_text(setup: Setup) -> str:
+    drafts = setup.fake.accounts["work"].folders["Drafts"].messages
+    assert len(drafts) == 1
+    return parse_message(next(iter(drafts.values())).raw).text
+
+
+def test_a_reply_stands_above_the_quoted_message(setup: Setup) -> None:
+    setup.say(
+        "Tell Kim that Thursday works",
+        Call("search_mail", {"query": "lunch"}),
+        Call("draft_reply", {"id": "m1", "body": "Thursday works for me.\n\nBest wishes\n"}),
+        "I saved a draft.",
+    )
+    # Nothing is known about the user's mail program or time zone: day first, 24 hours, UTC.
+    assert draft_text(setup) == (
+        "Thursday works for me.\n\nBest wishes\n\n"
+        "> On 19 Nov 2026, at 12:00, Kim Placeholder <kim@example.net> wrote:\n"
+        "> \n"
+        "> Are you free for lunch on Thursday?"
+    )
+    # The model is told that it need not quote anything itself.
+    tools = {tool["function"]["name"]: tool["function"] for tool in TOOLS}
+    assert "quoted below the reply automatically" in tools["draft_reply"]["description"]
+
+
+def test_the_quotation_is_introduced_the_way_the_users_own_replies_do_it(setup: Setup) -> None:
+    for number in range(3):
+        setup.deliver(
+            "Sent",
+            sender=USER,
+            to=[ALEX],
+            subject=f"Re: Question {number}",
+            text=(
+                "Yes, that is fine.\n\n"
+                f"> On Sep {number + 1}, 2026, at 4:05\u202fPM, Alex Example <alex@example.com> "
+                "wrote:\n> \n> Is that fine?\n"
+                ">> On Aug 30, 2026, at 9:00\u202fAM, somebody else wrote:\n"
+            ),
+        )
+    setup.deliver(
+        sender=KIM,
+        subject="Late question",
+        text="One more thing.\n> an older line\n\nKim\n",
+        date=datetime(2026, 7, 14, 22, 30, tzinfo=UTC),
+    )
+    setup.sync()
+    setup.time_zone = "Europe/London"
+    setup.say(
+        "Answer Kim's late question",
+        Call("search_mail", {"query": "late question"}),
+        Call("draft_reply", {"id": "m1", "body": "Noted."}),
+        "Done.",
+    )
+    # Month first and a 12-hour clock, as in the sent mail, and the summer time of the place.
+    assert draft_text(setup) == (
+        "Noted.\n\n"
+        "> On Jul 14, 2026, at 11:30\u202fPM, Kim Placeholder <kim@example.net> wrote:\n"
+        "> \n"
+        "> One more thing.\n"
+        ">> an older line\n"
+        "> \n"
+        "> Kim"
+    )
+
+
+def test_a_message_in_html_is_quoted_as_text_and_made_acceptable(setup: Setup) -> None:
+    setup.deliver(
+        sender=KIM,
+        subject="Offer of the week",
+        text=None,
+        html="<p>Dear\u200b customer,</p><p>this is <b>the\u00ad offer</b>.\u200b\u200d</p>",
+    )
+    setup.sync()
+    events = setup.say(
+        "Decline the offer",
+        Call("search_mail", {"query": "offer"}),
+        Call("draft_reply", {"id": "m1", "body": "No, thank you."}),
+        "Done.",
+    )
+    tools = [e.data["tool"] for e in events if e.kind == "item" and e.data["tool"]]
+    assert [t["ok"] for t in tools] == [True, True], "the gateway accepted the draft"
+    text = draft_text(setup)
+    assert text.startswith("No, thank you.\n\n> On 19 Nov 2026, at 12:00, Kim Placeholder")
+    assert "> Dear customer," in text
+    assert "the offer" in text
 
 
 def test_app_changes_are_forwarded_in_the_users_words(setup: Setup) -> None:

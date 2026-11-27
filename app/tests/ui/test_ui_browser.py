@@ -444,6 +444,19 @@ def test_navigation_keeps_the_place(ui: Session) -> None:
     ui.assert_clean()
 
 
+def test_the_time_zone_of_the_browser_is_reported(ui: Session) -> None:
+    page = ui.open("#chat")
+    zone = page.evaluate("Intl.DateTimeFormat().resolvedOptions().timeZone")
+    assert zone
+    page.wait_for_function("true")  # let the request that the page sent on loading go out
+    for _ in range(50):
+        if ui.backend.time_zone:
+            break
+        page.wait_for_timeout(100)
+    assert ui.backend.time_zone == zone
+    ui.assert_clean()
+
+
 def test_automatic_policy_setting(ui: Session) -> None:
     page = ui.open("#policy")
     box = page.locator("#policy-automatic")
@@ -451,7 +464,8 @@ def test_automatic_policy_setting(ui: Session) -> None:
     box.check()
     expect(box).to_be_checked()
     expect(box).to_be_enabled()
-    assert ui.backend.seen("PUT", "/api/settings") == [{"apply_policy_automatically": True}]
+    saved = [body for body in ui.backend.seen("PUT", "/api/settings") if "time_zone" not in body]
+    assert saved == [{"apply_policy_automatically": True}]
     assert ui.backend.apply_policy_automatically is True
     # The setting is read back from the backend when the view is opened again.
     page.reload()

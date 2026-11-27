@@ -4,6 +4,7 @@
 // #coding), so that reloading the page returns to the same place.
 
 import { loadActivity, initActivity } from "./activity.js";
+import { api } from "./api.js";
 import {
   currentConversation, initChat, refreshConversations, setConversationListener, showConversation,
 } from "./chat.js";
@@ -84,6 +85,18 @@ function init() {
 
   window.addEventListener("hashchange", route);
   route();
+  reportTimeZone();
+}
+
+// The app runs in a container that does not know where the user is. It needs their time zone
+// to write the date of a quoted message, in a reply, the way their mail program would.
+async function reportTimeZone() {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (zone) await api.saveSettings({ time_zone: zone });
+  } catch {
+    // Not worth a message: replies then state the time in UTC.
+  }
 }
 
 init();

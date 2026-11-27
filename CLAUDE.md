@@ -83,6 +83,7 @@ cd app && uv run python -m triage.testing.demo --port 8765
 | `gateway.py`, `llm.py`     | Clients for the gateway's sandbox API and for the local model behind its relay |
 | `sync.py`, `store.py`, `mime.py` | Local copy of the mail: sync, SQLite cache with full-text search, parsing and HTML sanitising |
 | `agent.py`                 | The assistant and its tools; also applies the policy to new mail. Requests about many messages go through `process_messages`, which puts each message before the model on its own |
+| `reply.py`, `reply_report.py` | The layout of a drafted reply (new text above the quoted original, as Apple Mail writes it), learnt in part from the user's sent mail; and a report on that sent mail that must never print anything of a message except structure |
 | `analysis.py`              | Background analysis of each new message |
 | `policy.py`, `settings.py`, `chats.py`, `activity.py` | Policy (Git-versioned), settings, conversations, operation log and undo |
 | `server.py`                | HTTP API, static files, background threads |

@@ -62,8 +62,9 @@ approval of change requests happens in the terminal rather than in a native dial
 
 Other known gaps: the policy is applied to each new message when it arrives, so rules that depend
 on something happening later ("when I have sent the draft, archive the original") are not carried
-out yet; server-side search only accepts ASCII; and text that an email hides from human readers
-is still visible to the model.
+out yet; server-side search only accepts ASCII; text that an email hides from human readers
+is still visible to the model; and a drafted reply quotes the message it answers as plain text,
+also when that message is in HTML (the specification requires drafts to be plain text).
 
 To see the interface without any of the setup below, with made-up mail and a pretend model:
 
@@ -202,6 +203,38 @@ TRIAGE_LLM_API_KEY=$(security find-generic-password -s email-triage -a llm-api-k
 It gives the assistant a few tasks (answer a question, move one message, deal with every
 request of a kind in a full inbox, analyse new messages), prints what the assistant did, and
 checks the mailbox afterwards. Name one or more scenarios after the command to run only those.
+
+How drafted replies look
+------------------------
+
+A reply that the assistant drafts has the new text on top and the message it answers quoted
+below, laid out the way Apple Mail lays out a plain-text reply:
+
+```
+Thank you, Thursday works for me.
+
+> On 19 Nov 2026, at 12:00, Kim Placeholder <kim@example.net> wrote:
+> 
+> Are you free for lunch on Thursday?
+```
+
+How the date in that line is written depends on the settings of your Mac, which the email
+sandbox cannot see. The app therefore copies the form used by the newest replies in your sent
+mail, and uses the time zone that your browser reports.
+
+This layout has been written from what Apple Mail is known to do, **not compared with real
+mail**. To compare it with yours without showing your mail to anybody, run this while
+`triage up` is running:
+
+```sh
+docker exec triage-app /opt/venv/bin/python -m triage.reply_report
+```
+
+It reads the local copy of your sent mail inside the email sandbox and prints a description of
+structure only: counts, names of MIME types, header fields and HTML elements, and the shape of
+the line above a quotation, in which every word is replaced by `Xx`, every digit by `9` and
+every address by `ADDR`. It prints no text, name, address, date, subject or folder name. Look
+through it before you pass it on.
 
 Development
 -----------

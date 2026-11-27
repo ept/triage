@@ -147,6 +147,7 @@ class App:
             chats=self.chats,
             policy=self.policy,
             on_mail_changed=self._sync_wanted.set,
+            time_zone=lambda: self.settings.get().time_zone,
         )
         self._agent_lock = threading.Lock()
         self._stopping = threading.Event()
@@ -646,7 +647,12 @@ class App:
             except ValueError as exc:
                 raise Problem(400, "bad_request", str(exc)) from exc
         current = self.settings.get()
-        return JSONResponse({"apply_policy_automatically": current.apply_policy_automatically})
+        return JSONResponse(
+            {
+                "apply_policy_automatically": current.apply_policy_automatically,
+                "time_zone": current.time_zone,
+            }
+        )
 
     # -- coding agent
 

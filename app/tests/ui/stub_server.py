@@ -112,6 +112,7 @@ class StubBackend:
             ),
         }
         self.apply_policy_automatically = False
+        self.time_zone = ""
         self.policy_text = t("Archive newsletters after a week.\nFlag nothing.\n")
         self.policy_versions = [
             {"id": "v2", "time": TIME, "summary": t("Edited by you")},
@@ -384,6 +385,12 @@ class StubBackend:
         with self._lock:
             self.requests.append((method, path, body))
 
+    def settings(self) -> dict[str, Any]:
+        return {
+            "apply_policy_automatically": self.apply_policy_automatically,
+            "time_zone": self.time_zone,
+        }
+
     def seen(self, method: str, path: str) -> list[Any]:
         """The bodies of the recorded requests with this method and path (without query)."""
         with self._lock:
@@ -540,10 +547,13 @@ class _Handler(BaseHTTPRequestHandler):
                 b.policy_text = str(body["text"])
                 self._json({})
             case ("GET", ["api", "settings"]):
-                self._json({"apply_policy_automatically": b.apply_policy_automatically})
+                self._json(b.settings())
             case ("PUT", ["api", "settings"]):
-                b.apply_policy_automatically = body["apply_policy_automatically"] is True
-                self._json({"apply_policy_automatically": b.apply_policy_automatically})
+                if "apply_policy_automatically" in body:
+                    b.apply_policy_automatically = body["apply_policy_automatically"] is True
+                if "time_zone" in body:
+                    b.time_zone = str(body["time_zone"])
+                self._json(b.settings())
             case ("GET", ["api", "policy", "history"]):
                 self._json({"versions": b.policy_versions})
             case ("GET", ["api", "policy", "history", version]):

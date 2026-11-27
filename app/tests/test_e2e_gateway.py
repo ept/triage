@@ -20,6 +20,8 @@ from triage.gateway import (
     Recipient,
     UidValidityChangedError,
 )
+from triage.mime import Address
+from triage.reply import ReplyStyle, attribution_line, with_quote
 from triage.store import MessageKey, Store
 from triage.sync import SyncEngine
 from triage.testing.samples import ALEX, KIM, USER, make_message
@@ -189,6 +191,51 @@ def test_sync_search_and_changes_round_trip(
         real_client.folder_status("work", "No such folder")
     assert len(real_client.log().entries) == 3, "refused requests are not logged"
 
+    store.close()
+
+
+def test_a_quoted_reply_survives_the_real_gateway(
+    server: real_gateway.RealGateway, real_client: GatewayClient, tmp_path: Path
+) -> None:
+    """The gateway accepts a reply with a quotation, and stores its lines as they were."""
+    original = (
+        "Dear\u200b customer,\n\nthis\u00ad is the\ufeff offer.\u200b\u200d\n"
+        "> an older line  \n\n" + "A long line of the offer that goes on and on. " * 8 + "\n"
+    )
+    server.deliver(
+        "INBOX",
+        make_message(sender=KIM, subject="Offer", text=original, message_id="<offer@example.net>"),
+    )
+    store = Store(tmp_path / "cache")
+    SyncEngine(real_client, store).sync_all()
+    message = store.get_message(store.search("offer", account="work")[0].key)
+    assert message is not None
+    american = ReplyStyle(day_first=False, half_day="AM", half_day_gap="\u202f")
+    introduction = attribution_line(
+        Address(*KIM), datetime(2026, 9, 3, 13, 5, tzinfo=UTC), UTC, american
+    )
+    body = with_quote("No, thank you.\n\nRobin", introduction, message.body)
+    assert "\u200b" not in body
+    real_client.create_draft(
+        "work",
+        to=[Recipient(address=KIM[1], name=KIM[0])],
+        subject="Re: Offer",
+        body=body,
+        in_reply_to=MessageRef("INBOX", message.key.uid_validity, message.key.uid),
+    )
+    SyncEngine(real_client, store).sync_all()
+    draft = store.get_parsed(store.list_folder("work", "Drafts")[0].key)
+    assert draft is not None
+    assert draft.text.rstrip("\n") == body
+    assert draft.text.split("\n")[:6] == [
+        "No, thank you.",
+        "",
+        "Robin",
+        "",
+        f"> On Sep 3, 2026, at 1:05\u202fPM, {KIM[0]} <{KIM[1]}> wrote:",
+        "> ",
+    ]
+    assert ">> an older line" in draft.text
     store.close()
 
 

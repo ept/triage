@@ -408,13 +408,22 @@ def test_background_threads_sync_and_analyse(tmp_path: Path, fake: FakeGateway) 
 
 
 def test_settings(setup: Setup) -> None:
-    assert setup.http.get("/api/settings").json() == {"apply_policy_automatically": False}
+    unset = {"apply_policy_automatically": False, "time_zone": ""}
+    assert setup.http.get("/api/settings").json() == unset
     changed = setup.http.put("/api/settings", json={"apply_policy_automatically": True})
-    assert changed.json() == {"apply_policy_automatically": True}
-    assert setup.http.get("/api/settings").json() == {"apply_policy_automatically": True}
-    for bad in [{"apply_policy_automatically": "yes"}, {"unknown": True}]:
+    assert changed.json() == {"apply_policy_automatically": True, "time_zone": ""}
+    assert setup.http.get("/api/settings").json() == changed.json()
+    for bad in [
+        {"apply_policy_automatically": "yes"},
+        {"unknown": True},
+        {"time_zone": "Nowhere/Special"},
+        {"time_zone": "../../etc/passwd"},
+        {"time_zone": 3},
+    ]:
         assert setup.http.put("/api/settings", json=bad).status_code == 400
-    assert setup.http.get("/api/settings").json() == {"apply_policy_automatically": True}
+    assert setup.http.get("/api/settings").json() == changed.json()
+    zone = setup.http.put("/api/settings", json={"time_zone": "Europe/London"})
+    assert zone.json() == {"apply_policy_automatically": True, "time_zone": "Europe/London"}
 
 
 def test_policy_is_applied_automatically_only_when_switched_on(setup: Setup) -> None:
