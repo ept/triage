@@ -52,7 +52,7 @@ This is an early version. What exists, and how far it has been tested:
 | Host tool `triage`           | Implemented; its logic is unit-tested and it builds on macOS, but `triage up` has **not yet been run against Docker** |
 | Container images             | **Not yet built with Docker.** The build steps of all three Dockerfiles have been replayed inside the real base images without Docker (except the Rust installation in the coding sandbox image), and the resulting gateway and app start and talk to each other |
 | LLM sandbox profile          | Written, **not yet tested on macOS**                                   |
-| Wrapper app `email-triage`   | First version (see "The wrapper app" below). Its windows, the approval of a request and the confinement of the web view have been tried on Linux with stand-ins for Docker and the gateway. On macOS only its self-test has been run, and **failed** twice; the fix for the second failure has not been run there yet |
+| Wrapper app `email-triage`   | First version (see "The wrapper app" below). Its windows, the approval of a request and the confinement of the web view have been tried on Linux with stand-ins for Docker and the gateway. On macOS only its self-test has been run: it failed twice and then passed. Since then WebRTC, WebTransport, service workers and shared workers have been switched off in WebKit itself and the self-test has been widened to cover workers; that version has not been run on macOS yet |
 | OAuth login (Gmail, Microsoft 365) | Gateway side implemented, untested against real providers; no consent flow in the host tool yet |
 | Scripts written by the local LLM, text from attachments, automatic dependency updates | Not started |
 
@@ -203,18 +203,24 @@ The wrapper app
   show the app if the setting is not there.
   Navigating elsewhere, opening windows, downloads, camera, microphone and the interfaces that
   do not go through proxies (WebRTC, WebTransport) are switched off, and pages have no channel
-  to the wrapper. Links to other sites therefore do nothing yet.
+  to the wrapper. On macOS, WebRTC and WebTransport are switched off in WebKit itself, because
+  WebTransport is also offered inside workers, where the wrapper cannot remove it by script;
+  so are service workers and shared workers, which run outside the page. These, too, are
+  settings that Apple has not published. Links to other sites therefore do nothing yet.
 * Before a message goes to the coding agent, a window of the wrapper's own shows its exact text
   and asks. Closing that window, or quitting, means no.
 * Quitting (closing the main window, or Cmd-Q) stops and removes the containers.
 
 It is part of the trusted base, so build it from the reviewed copy. It needs macOS 14 or later.
 **Run the self-test first**: whether the confinement holds depends on how the system's web view
-behaves. On Linux it passes. On macOS it has failed twice. First, requests for other ports of
-the same machine got through; the content rule list stopped those. Then one thing remained: a
-click on a link opened a connection to another port of the same machine, over which nothing was
-sent. Switching off connections ahead of time is the fix for that, and it has **not yet been run
-on macOS**.
+behaves, and that can change with an update of the system: run it again after one. On Linux it
+passes. On macOS it failed twice before it passed. First, requests for other ports of the same
+machine got through; the content rule list stopped those. Then a click on a link still opened a
+connection to another port of the same machine, over which nothing was sent; switching off
+connections ahead of time stopped that. The control of that passing run then showed that
+WebTransport sends datagrams, and it is offered inside workers, which the self-test did not try.
+Workers are tried now and those features are switched off, and this latest version has **not yet
+been run on macOS**.
 
 ```sh
 cd ~/src/triage-trusted/trusted/wrapper
