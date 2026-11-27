@@ -6,6 +6,7 @@ pub mod agent;
 pub mod control;
 pub mod deploy;
 pub mod docker;
+pub mod run;
 pub mod sandbox;
 pub mod secrets;
 pub mod settings;
