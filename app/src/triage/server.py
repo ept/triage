@@ -344,6 +344,7 @@ class App:
             Route("/healthz", self.healthz),
             Route("/api/status", self.status),
             Route("/api/sync", self.start_sync, methods=["POST"]),
+            Route("/api/assistant/stop", self.stop_assistant, methods=["POST"]),
             Route("/api/conversations", self.conversations, methods=["GET", "POST"]),
             Route("/api/conversations/{conversation_id:int}", self.conversation),
             Route(
@@ -459,6 +460,12 @@ class App:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
+
+    async def stop_assistant(self, request: Request) -> Response:
+        """End what the assistant is doing for the user, as soon as it can be interrupted."""
+        if self._agent_lock.locked():
+            self.agent.stop()
+        return JSONResponse({})
 
     def _reply_stream(self, conversation_id: int, text: str) -> Iterator[bytes]:
         def frame(kind: str, data: Mapping[str, Any]) -> bytes:

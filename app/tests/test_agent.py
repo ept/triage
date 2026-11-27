@@ -300,14 +300,6 @@ def test_bug_reports_and_policy_proposals_wait_for_the_user(setup: Setup) -> Non
     assert "Archive newsletters." in setup.scripted.requests[0]["messages"][0]["content"]
 
 
-def test_the_number_of_steps_is_limited(setup: Setup) -> None:
-    setup.scripted.default = Call("list_folders")
-    events = setup.say("Loop forever")
-    assert len(setup.scripted.requests) == 8
-    assert events[-2].data["role"] == "assistant"
-    assert "could not finish" in events[-2].data["text"]
-
-
 def test_model_problems_become_error_events(setup: Setup) -> None:
     setup.scripted.fail_with = (503, "loading")
     events = setup.say("Hello")

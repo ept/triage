@@ -54,6 +54,15 @@ def _events(reply: str | Sequence[Call]) -> list[dict[str, Any]]:
     ]
 
 
+def _is_routing(request: Mapping[str, Any]) -> bool:
+    """Whether a request is the assistant's question about what kind of request it has."""
+    try:
+        properties = request["response_format"]["json_schema"]["schema"]["properties"]
+    except (KeyError, TypeError):
+        return False
+    return "each" in properties
+
+
 class ScriptedLlm:
     """Answers chat completion requests from a list of prepared replies.
 
@@ -67,6 +76,11 @@ class ScriptedLlm:
         self.requests: list[dict[str, Any]] = []
         self.model = "scripted-test-model"
         self.fail_with: tuple[int, str] | None = None
+        # Before anything else, the assistant asks whether a request is about doing something
+        # to every message of a kind. That question is answered from here, not from the
+        # script: "no" unless a test says otherwise.
+        self.route: Mapping[str, Any] | str = {"each": False, "which": "", "folder": "", "days": 0}
+        self.route_requests: list[dict[str, Any]] = []
 
     def handler(self, method: str, path: str, body: bytes) -> FakeResponse:
         if method == "GET" and path == "/v1/models":
@@ -76,6 +90,14 @@ class ScriptedLlm:
                 status, message = self.fail_with
                 return FakeResponse.json({"error": {"message": message}}, status)
             request = json.loads(body)
+            if _is_routing(request):
+                self.route_requests.append(request)
+                route = self.route if isinstance(self.route, str) else json.dumps(self.route)
+                lines = [f"data: {json.dumps(event)}\n\n" for event in _events(route)]
+                lines.append("data: [DONE]\n\n")
+                return FakeResponse(
+                    200, {"content-type": "text/event-stream"}, "".join(lines).encode()
+                )
             self.requests.append(request)
             reply = self.replies.pop(0) if self.replies else self.default
             while callable(reply):

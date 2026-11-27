@@ -320,6 +320,24 @@ def test_notifications_from_the_gateway(setup: Setup) -> None:
     assert "23 messages were moved to the trash" in notices[0]["text"]
 
 
+def test_the_assistant_can_be_stopped(setup: Setup) -> None:
+    # Nothing is running: the request is accepted and has no effect on the next question.
+    assert setup.http.post("/api/assistant/stop", json={}).status_code == 200
+    assert not setup.app.agent.stopping
+    conversation = setup.http.post("/api/conversations", json={}).json()["id"]
+    setup.scripted.replies.append("Hello.")
+    assert setup.chat(conversation, "Hi")[-2][1]["text"] == "Hello."
+
+    # While it is answering, the request ends the answer.
+    def stop_and_answer(request: Any) -> str:
+        assert setup.http.post("/api/assistant/stop", json={}).status_code == 200
+        return "This answer is not wanted any more."
+
+    setup.scripted.replies.append(stop_and_answer)
+    events = setup.chat(conversation, "Tell me everything")
+    assert events[-2][1]["text"].startswith("Stopped, as you asked.")
+
+
 def test_account_changes_reach_the_running_app(tmp_path: Path, fake: FakeGateway) -> None:
     """Adding or removing an account needs no restart: the gateway announces the change."""
     env = Setup(tmp_path, fake)
