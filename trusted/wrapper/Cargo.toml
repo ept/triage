@@ -1,0 +1,19 @@
+# The wrapper app: a window that shows the app's web interface and nothing else, starts and
+# supervises the sandboxes, and asks for approval in a window of its own.
+#
+# This is a workspace of its own, with its own lock file, so that the gateway's build (which
+# copies the other workspace into its image) does not depend on the wrapper's many
+# dependencies.
+
+[package]
+name = "triage-wrapper"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.90"
+
+[workspace]
+
+[dependencies]
+
+[dev-dependencies]
