@@ -25,7 +25,7 @@ How it fits together
  │ │         ▲            └────────────────────────────────────────┘      │ │
  │ │         │ app image, built from committed source                     │ │
  │ │  ┌───────────────┐                                                   │ │
- │ │  │ coding sandbox│──────────────────────────────────────────────────┼─┼──▶ internet,
+ │ │  │ coding sandbox│───────────────────────────────────────────────────┼─┼──▶ internet,
  │ │  │  coding agent │   no email data, no credentials                   │ │    coding model
  │ │  └───────────────┘                                                   │ │
  │ └──────────────────────────────────────────────────────────────────────┘ │
