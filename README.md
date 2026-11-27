@@ -52,13 +52,14 @@ This is an early version. What exists, and how far it has been tested:
 | Host tool `triage`           | Implemented; its logic is unit-tested and it builds on macOS, but `triage up` has **not yet been run against Docker** |
 | Container images             | **Not yet built with Docker.** The build steps of all three Dockerfiles have been replayed inside the real base images without Docker (except the Rust installation in the coding sandbox image), and the resulting gateway and app start and talk to each other |
 | LLM sandbox profile          | Written, **not yet tested on macOS**                                   |
-| Wrapper app (Tauri)          | Not started; `triage up` and a normal browser stand in for it          |
+| Wrapper app `email-triage`   | First version (see "The wrapper app" below). Its windows, the approval of a request and the confinement of the web view have been tried on Linux with stand-ins for Docker and the gateway; it has **not yet been run on macOS**, for which it has only been type-checked |
 | OAuth login (Gmail, Microsoft 365) | Gateway side implemented, untested against real providers; no consent flow in the host tool yet |
 | Scripts written by the local LLM, text from attachments, automatic dependency updates | Not started |
 
-Until the wrapper app exists, two of the specification's requirements are not met: the web
-interface runs in a normal browser, which does not stop a page from navigating elsewhere, and the
-approval of change requests happens in the terminal rather than in a native dialog.
+With `triage up` and a normal browser, two of the specification's requirements are not met: a
+browser does not stop a page from navigating elsewhere, and the approval of change requests
+happens in the terminal rather than in a window. The wrapper app is meant to meet both, once it
+has passed its self-test on your machine.
 
 Other known gaps: the policy is applied to each new message when it arrives, so rules that depend
 on something happening later ("when I have sent the draft, archive the original") are not carried
@@ -186,6 +187,48 @@ before the restart is no longer connected, and has to be closed or pointed at th
 Your data lives in `~/.triage`: `cache/` (local copy of your mail and its index), `config/`
 (settings and your policy), `gateway/` (the log of every change made to your mailboxes).
 
+The wrapper app
+---------------
+
+`email-triage` does what `triage up` does, in a window instead of a terminal and a browser:
+
+* It shows the app's web interface in a window that can reach the app and nothing else. All
+  traffic of that window goes through a small proxy inside the wrapper, which passes on requests
+  for the app and refuses the rest; navigating elsewhere, opening windows, downloads, camera,
+  microphone and direct connections (WebRTC) are switched off; and pages have no channel to the
+  wrapper. Links to other sites therefore do nothing yet.
+* Before a message goes to the coding agent, a window of the wrapper's own shows its exact text
+  and asks. Closing that window, or quitting, means no.
+* Quitting (closing the main window, or Cmd-Q) stops and removes the containers.
+
+It is part of the trusted base, so build it from the reviewed copy. It needs macOS 14 or later.
+**Run the self-test first**: whether the confinement holds depends on how the system's web view
+behaves, and that has only been tried on Linux so far.
+
+```sh
+cd ~/src/triage-trusted/trusted/wrapper
+cargo run --release -- --self-test            # must end with PASSED
+cargo run --release -- --self-test-control    # must end with "The control worked"
+cargo install --locked --path .               # installs the `email-triage` command
+email-triage                                  # instead of `triage up`; stop that first
+```
+
+The self-test shows a page that tries to reach a second server in every way a page has, in a web
+view set up like the one for the app; the control does the same without the restrictions, to
+show that the test can fail. Both use no mail and no network beyond your machine, and their
+output is safe to share. If the self-test does not pass, keep using `triage up`.
+
+The first start asks for access to the Keychain entries that `triage` created, because it is a
+different program. Setting things up (`triage init`, `triage account add`, `triage secret`,
+`triage build-gateway`) and `triage coding-login` still happen on the command line, and the
+local model is still started by hand. If the coding sandbox image has to be built, that happens
+during the first start without visible progress, and takes several minutes.
+
+It is built on `wry` and `tao`, the web view and window libraries underneath Tauri, without the
+Tauri framework: that is about a third of the dependencies, and no bridge between pages and
+native code. Their versions are pinned exactly. `trusted/tools/dependency-age.py` lists locked
+crates that were published less than seven days ago.
+
 Trying a model
 --------------
 
@@ -246,6 +289,8 @@ The coding sandbox image (`coding/Dockerfile`) has everything needed:
 ```sh
 cd trusted && cargo test && cargo clippy --all-targets && cargo fmt --check
 cd trusted && cargo build -p triage-gateway
+cd trusted/wrapper && cargo test && cargo clippy --all-targets   # needs libwebkit2gtk-4.1-dev
+cd trusted/wrapper && xvfb-run -a cargo run -- --self-test       # and xvfb, on Linux
 cd app && TRIAGE_GATEWAY_BIN=../trusted/target/debug/triage-gateway uv run pytest
 cd app && uv run ruff check && uv run ruff format --check && uv run mypy
 ```

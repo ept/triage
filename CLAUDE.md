@@ -62,6 +62,11 @@ cd trusted && cargo test && cargo clippy --all-targets && cargo fmt --check
 cargo check -p triage-host --target aarch64-apple-darwin   # the host tool must build for macOS
 cargo build -p triage-gateway                              # used by the app's end-to-end tests
 
+# The wrapper app is a workspace of its own (trusted/wrapper). It needs libwebkit2gtk-4.1-dev
+# and xvfb, which this sandbox may not have; its self-test must pass after any change to it.
+cd trusted/wrapper && cargo test && cargo clippy --all-targets && cargo fmt --check
+cd trusted/wrapper && xvfb-run -a cargo run -- --self-test
+
 # App. With TRIAGE_GATEWAY_BIN the end-to-end tests against the real gateway run too; the
 # interface tests need Chromium. Both kinds skip themselves when their requirement is missing,
 # so check the summary line for skipped tests before you rely on a green run.
