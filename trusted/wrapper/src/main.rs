@@ -6,7 +6,8 @@
 //!
 //! This is part of the trusted base: build it from a fresh clone of the repository at a commit
 //! you have reviewed (see README.md). `email-triage --self-test` checks on this machine that
-//! the web view is confined.
+//! the web view is confined; the wrapper runs it by itself before it shows the app, whenever
+//! the system's web view or the wrapper has changed since it last passed (see `checked.rs`).
 
 mod selftest;
 
@@ -21,8 +22,10 @@ use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 use tao::window::{Window, WindowBuilder, WindowId};
 use triage_host::docker::Cli as DockerCli;
+use triage_host::run::Frontend;
 use triage_host::{run, settings};
 use triage_wrapper::bridge::{Bridge, Request};
+use triage_wrapper::checked::{self, Subject};
 use triage_wrapper::pages::{self, Decision};
 use triage_wrapper::proxy::Proxy;
 use triage_wrapper::view;
@@ -103,8 +106,58 @@ fn open_own(
     })
 }
 
+/// Makes sure that the self-test has passed with this web view and this program, running it
+/// if it has not (see `checked.rs`). Nothing is started and the app is not shown otherwise.
+fn check_confinement(
+    data: &std::path::Path,
+    web_view: Result<String, String>,
+    frontend: &dyn Frontend,
+) -> Result<(), String> {
+    let unchecked = |reason: String| {
+        format!(
+            "It could not be checked that the web view on this machine is confined to the \
+             app, so the app is not shown. Use `triage up` instead. ({reason})"
+        )
+    };
+    let web_view = web_view.map_err(unchecked)?;
+    let executable = std::env::current_exe()
+        .map_err(|error| unchecked(format!("this program's own file: {error}")))?;
+    let subject = Subject::new(&web_view, &executable).map_err(unchecked)?;
+    std::fs::create_dir_all(data)
+        .map_err(|error| unchecked(format!("{}: {error}", data.display())))?;
+    if !checked::passed_before(data, &subject) {
+        frontend.say(
+            "Checking that the web view on this machine is confined to the app. This takes \
+             about half a minute, and a window opens and closes by itself. It happens once \
+             for each version of the system's web view and of this program.",
+        );
+    }
+    let output = data.join(checked::OUTPUT);
+    let ran = checked::ensure(data, &subject, || {
+        checked::run_self_test(&executable, &output, || frontend.stopping())
+    })
+    .map_err(|reason| {
+        format!(
+            "The web view on this machine is not known to be confined to the app, so the \
+             app is not shown: {reason}. Use `triage up` instead. The output of the \
+             self-test is in {}.",
+            output.display()
+        )
+    })?;
+    if ran {
+        frontend.say("The web view is confined.");
+    }
+    Ok(())
+}
+
 /// Starts the sandboxes and supervises them, on a thread of its own. Sets `done` at the end.
-fn supervise(wake: EventLoopProxy<Message>, stop: Arc<AtomicBool>, done: Arc<AtomicBool>) {
+/// `web_view` is the version of the system's web view, found out on the window thread.
+fn supervise(
+    wake: EventLoopProxy<Message>,
+    stop: Arc<AtomicBool>,
+    done: Arc<AtomicBool>,
+    web_view: Result<String, String>,
+) {
     let deliver = {
         let wake = wake.clone();
         move |request| {
@@ -115,6 +168,7 @@ fn supervise(wake: EventLoopProxy<Message>, stop: Arc<AtomicBool>, done: Arc<Ato
     let docker = DockerCli;
     let result = (|| {
         let data = settings::data_dir()?;
+        check_confinement(&data, web_view, &frontend)?;
         let mut running = run::start(&data, &docker, false, &frontend)?;
         wake.send_event(Message::Started {
             url: running.control.session_url(),
@@ -391,7 +445,9 @@ fn main() {
                 started = true;
                 windows.show_status(target);
                 let (wake, stop, done) = (wake.clone(), stop.clone(), done.clone());
-                std::thread::spawn(move || supervise(wake, stop, done));
+                let web_view = wry::webview_version()
+                    .map_err(|error| format!("the version of the web view: {error}"));
+                std::thread::spawn(move || supervise(wake, stop, done, web_view));
             }
             Event::UserEvent(message) => {
                 if windows.handle(message, target) {
