@@ -68,6 +68,17 @@ impl ApiError {
         )
     }
 
+    /// A request to the web interface relay without a valid session. The usual cause is a
+    /// browser window left over from before a restart, which is what the message explains.
+    pub fn no_session() -> Self {
+        Self::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "This window is not connected to the app any more, probably because the app was \
+             restarted. Open the address that `triage up` printed when it started.",
+        )
+    }
+
     pub fn body(&self) -> serde_json::Value {
         json!({"error": {"code": self.code, "message": self.message}})
     }

@@ -646,6 +646,10 @@ async fn the_web_interface_relay_needs_a_session() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        // A window left over from before a restart ends up here, so the answer says what to do.
+        let body: Value = response.json().await.unwrap();
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("restarted") && message.contains("triage up"));
     }
 
     // The wrapper app's web view starts a session with its secret ...

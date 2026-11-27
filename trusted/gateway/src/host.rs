@@ -242,7 +242,7 @@ struct SessionParams {
 /// that scripts cannot read and that is not sent along with requests from other sites.
 async fn start_session(State(gateway): Shared, Params(params): Params<SessionParams>) -> Response {
     if !matches_secret(&params.token, &gateway.settings.ui_token) {
-        return ApiError::unauthorized().into_response();
+        return ApiError::no_session().into_response();
     }
     let cookie = format!(
         "{SESSION_COOKIE}={}; Path=/; HttpOnly; SameSite=Strict",
@@ -281,7 +281,7 @@ fn split_cookies(headers: &HeaderMap) -> (Option<String>, Option<String>) {
 async fn relay_to_app(State(gateway): Shared, request: Request) -> Response {
     let (session, other_cookies) = split_cookies(request.headers());
     if !session.is_some_and(|value| matches_secret(&value, &gateway.settings.ui_token)) {
-        return ApiError::unauthorized().into_response();
+        return ApiError::no_session().into_response();
     }
     let path_and_query = request
         .uri()
