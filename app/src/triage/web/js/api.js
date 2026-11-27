@@ -10,7 +10,14 @@ export class ApiError extends Error {
   }
 }
 
+// The app itself never answers 401: it comes from the relay in front of the app, when this
+// window's session is not valid (any more). That happens whenever the app is restarted.
+export const SESSION_ENDED =
+  "This window is not connected to the app any more, probably because the app was restarted. " +
+  "Open the address that `triage up` printed when it started.";
+
 async function errorFrom(response) {
+  if (response.status === 401) return new ApiError(SESSION_ENDED, "session_ended", 401);
   let message = `The request failed (${response.status}).`;
   let code = "error";
   try {

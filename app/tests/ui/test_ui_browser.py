@@ -273,6 +273,17 @@ def test_accepting_a_proposal_in_the_policy_view_updates_the_editor(ui: Session)
     ui.assert_clean()
 
 
+def test_a_lost_session_is_explained(ui: Session) -> None:
+    # After a restart the relay in front of the app turns this window away with a 401, whose
+    # own wording ("missing or wrong token") says nothing about what to do.
+    page = ui.open("#chat")
+    ui.backend.fail_next("GET", "/api/status", 401, "unauthorized", "missing or wrong token")
+    page.locator("#sync-now").click()
+    expect(page.locator("#status-body")).to_contain_text("probably because the app was restarted")
+    expect(page.locator("#status-body")).to_contain_text("triage up")
+    expect(page.locator("#status-body")).not_to_contain_text("missing or wrong token")
+
+
 def test_a_refused_request_is_reported(ui: Session) -> None:
     page = ui.open("#policy")
     ui.backend.fail_next(

@@ -176,6 +176,11 @@ wants to send to the coding agent, after reading its exact text. `triage coding-
 coding agent in to your Claude account the first time; alternatively store an API key with
 `triage secret coding-api-key`.
 
+Changes to accounts and other settings take effect when `triage up` starts, so stop it with
+Ctrl-C and run it again after `triage account add`. Each start prints a new address: a browser
+window from before the restart is no longer connected, and has to be closed or pointed at the
+new address.
+
 Your data lives in `~/.triage`: `cache/` (local copy of your mail and its index), `config/`
 (settings and your policy), `gateway/` (the log of every change made to your mailboxes).
 
