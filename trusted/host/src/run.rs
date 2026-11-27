@@ -107,6 +107,27 @@ pub fn report(outcome: &Outcome) -> String {
 
 /// Creates the networks and containers, hands the accounts to the gateway, and brings the app
 /// up to date with the committed source.
+/// Makes sure, at the end of starting, that the app answers. `deploy` waits for a version
+/// that it starts itself, but when the committed version is the one from last time, the app
+/// was started only a moment ago and `deploy` returns at once. Whoever opens the app right
+/// then (the wrapper does, by itself) would get the gateway's error instead of the app.
+fn wait_for_app(outcome: &Outcome, healthy: &dyn Fn() -> bool) -> Result<(), String> {
+    if matches!(outcome, Outcome::Failed { .. }) {
+        return Err(
+            "The app is not running: it did not start properly, and there is no previous \
+             version to go back to."
+                .into(),
+        );
+    }
+    if healthy() {
+        return Ok(());
+    }
+    Err(format!(
+        "The app does not answer. `docker logs {}` shows what it has printed.",
+        sandbox::APP
+    ))
+}
+
 pub fn start(
     data: &Path,
     docker: &dyn Docker,
@@ -187,6 +208,7 @@ pub fn start(
     let outcome = deploy::deploy(docker, &layout, &mut state, rebuild, &healthy)?;
     settings::write(&state_path, &state)?;
     frontend.say(&report(&outcome));
+    wait_for_app(&outcome, &healthy)?;
 
     Ok(Running {
         control,
@@ -495,6 +517,43 @@ mod tests {
             .filter(|(line, _)| line.starts_with("POST") && line.contains(part))
             .map(|(_, body)| body.clone())
             .collect()
+    }
+
+    #[test]
+    fn starting_waits_for_an_app_that_was_only_just_started() {
+        use std::cell::Cell;
+        // The usual start: nothing new to deploy, and the app needs a moment to come up.
+        let asked = Cell::new(0);
+        let comes_up = || {
+            asked.set(asked.get() + 1);
+            true
+        };
+        assert_eq!(wait_for_app(&Outcome::Unchanged, &comes_up), Ok(()));
+        assert_eq!(asked.get(), 1);
+
+        for outcome in [
+            Outcome::Unchanged,
+            Outcome::Updated {
+                image: "triage-app:2".into(),
+            },
+            Outcome::BuildFailed {
+                reason: "tests failed".into(),
+            },
+            Outcome::RolledBack {
+                failed_image: "triage-app:2".into(),
+            },
+        ] {
+            assert_eq!(wait_for_app(&outcome, &|| true), Ok(()));
+            let error = wait_for_app(&outcome, &|| false).unwrap_err();
+            assert!(error.contains("does not answer"), "{error}");
+        }
+
+        // Nothing to wait for: there is no app.
+        let failed = Outcome::Failed {
+            failed_image: "triage-app:1".into(),
+        };
+        let error = wait_for_app(&failed, &|| panic!("not asked")).unwrap_err();
+        assert!(error.contains("not running"), "{error}");
     }
 
     #[test]
