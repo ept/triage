@@ -52,7 +52,7 @@ This is an early version. What exists, and how far it has been tested:
 | Host tool `triage`           | Implemented; its logic is unit-tested and it builds on macOS, but `triage up` has **not yet been run against Docker** |
 | Container images             | **Not yet built with Docker.** The build steps of all three Dockerfiles have been replayed inside the real base images without Docker (except the Rust installation in the coding sandbox image), and the resulting gateway and app start and talk to each other |
 | LLM sandbox profile          | Written, **not yet tested on macOS**                                   |
-| Wrapper app `email-triage`   | First version (see "The wrapper app" below). Its windows, the approval of a request and the confinement of the web view have been tried on Linux with stand-ins for Docker and the gateway. On macOS only its self-test has been run: it failed twice and then passed. Since then WebRTC, WebTransport, service workers and shared workers have been switched off in WebKit itself and the self-test has been widened to cover workers; that version has not been run on macOS yet |
+| Wrapper app `email-triage`   | First version (see "The wrapper app" below). Its windows, the approval of a request and the confinement of the web view have been tried on Linux with stand-ins for Docker and the gateway. On macOS only its self-test has been run: it failed twice and passes now. The wrapper itself, including the self-test that it runs by itself at start, has not been run on macOS yet |
 | OAuth login (Gmail, Microsoft 365) | Gateway side implemented, untested against real providers; no consent flow in the host tool yet |
 | Scripts written by the local LLM, text from attachments, automatic dependency updates | Not started |
 
@@ -212,20 +212,33 @@ The wrapper app
 * Quitting (closing the main window, or Cmd-Q) stops and removes the containers.
 
 It is part of the trusted base, so build it from the reviewed copy. It needs macOS 14 or later.
-**Run the self-test first**: whether the confinement holds depends on how the system's web view
-behaves, and that can change with an update of the system: run it again after one. On Linux it
-passes. On macOS it failed twice before it passed. First, requests for other ports of the same
-machine got through; the content rule list stopped those. Then a click on a link still opened a
-connection to another port of the same machine, over which nothing was sent; switching off
-connections ahead of time stopped that. The control of that passing run then showed that
-WebTransport sends datagrams, and it is offered inside workers, which the self-test did not try.
-Workers are tried now and those features are switched off, and this latest version has **not yet
-been run on macOS**.
+
+Whether the confinement holds depends on how the system's web view behaves, and that can change
+with an update of the system. So the wrapper has a **self-test**, and runs it by itself: at
+start, before anything else, whenever the version of the system's web view or the wrapper
+itself differs from what the self-test last passed with. That takes about half a minute, during
+which a window opens and closes by itself. If it does not pass, nothing is started and the app
+is not shown; the output is in `~/.triage/wrapper-self-test.log`, and what it last passed with
+in `~/.triage/wrapper-self-test.json`. You can also run it by hand, with its control:
 
 ```sh
 cd ~/src/triage-trusted/trusted/wrapper
 cargo run --release -- --self-test            # must end with PASSED
 cargo run --release -- --self-test-control    # must end with "The control worked"
+```
+
+On Linux it passes. On macOS (WebKit 22625.2.8) it failed twice before it passed. First,
+requests for other ports of the same machine got through; the content rule list stopped those.
+Then a click on a link still opened a connection to another port of the same machine, over
+which nothing was sent; switching off connections ahead of time stopped that. The control of
+that passing run then showed that WebTransport sends datagrams, and it is offered inside
+workers, which the self-test did not try. Workers are tried now and those features are switched
+off, and that version passes as well.
+
+To install and start it:
+
+```sh
+cd ~/src/triage-trusted/trusted/wrapper
 cargo install --locked --path .               # installs the `email-triage` command
 email-triage                                  # instead of `triage up`; stop that first
 ```
