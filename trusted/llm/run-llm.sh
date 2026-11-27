@@ -3,8 +3,9 @@
 #
 #   run-llm.sh <model.gguf> [port]
 #
-# The API key is read from the environment variable TRIAGE_LLM_API_KEY; store the same key with
-# `triage secret llm-api-key`, and tell the host tool the port with `triage init --llm-port`.
+# The API key is the one stored with `triage secret llm-api-key`: it is read from the macOS
+# Keychain (macOS may ask you to allow that), unless the environment variable
+# TRIAGE_LLM_API_KEY is set. Tell the host tool the port with `triage init --llm-port`.
 #
 # Part of the trusted base. NOTE: this script and the sandbox profile have not yet been tested
 # on macOS; check the server's output for sandbox violations the first time you use it.
@@ -12,7 +13,14 @@ set -eu
 
 model=${1:?usage: run-llm.sh <model.gguf> [port]}
 port=${2:-8012}
-: "${TRIAGE_LLM_API_KEY:?set TRIAGE_LLM_API_KEY to the key stored with: triage secret llm-api-key}"
+if [ -z "${TRIAGE_LLM_API_KEY:-}" ]; then
+    # Service and account names are those of the host tool (host/src/secrets.rs).
+    TRIAGE_LLM_API_KEY=$(security find-generic-password -s email-triage -a llm-api-key -w) || {
+        echo "no API key found in the Keychain; store one with: triage secret llm-api-key" >&2
+        exit 1
+    }
+fi
+[ -f "$model" ] || { echo "$model: no such file" >&2; exit 1; }
 
 here=$(cd "$(dirname "$0")" && pwd)
 server=$(command -v llama-server) || { echo "llama-server not found (brew install llama.cpp)" >&2; exit 1; }

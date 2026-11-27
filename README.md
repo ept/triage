@@ -115,18 +115,54 @@ now.
 
 ### 4. Start the local model
 
-Download a model in GGUF format that supports tool calls, choose an API key (any long random
-string), and run:
+The model runs directly on your Mac (containers cannot use the GPU), in a macOS sandbox that
+gives it no network access. Four steps:
+
+**Download a model** in GGUF format that supports tool calls, into a directory that contains
+nothing else: the sandboxed model server can read that directory, and nothing else in your home
+directory. On a Mac with 32 GB of memory, of which the model should use less than half, a
+reasonable first choice is gpt-oss-20b (a 12 GB download, about 13 GB of memory while running):
 
 ```sh
-triage secret llm-api-key               # paste the key
-triage init --repo ~/src/triage --llm-port 8012
-TRIAGE_LLM_API_KEY=<the key> ~/src/triage-trusted/trusted/llm/run-llm.sh ~/models/<model>.gguf 8012
+mkdir -p ~/models
+curl -L -C - -o ~/models/gpt-oss-20b-MXFP4.gguf \
+    https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-MXFP4.gguf
 ```
 
-The script runs `llama-server` in a macOS sandbox without network access. Which model works best
-depends on your machine's memory; a model of around 20 billion parameters is a reasonable start
-with 16–24 GB.
+(If the download is interrupted, the same command resumes it.) No model has been tried with
+this app yet, so expect to experiment. A smaller alternative is
+`gemma-4-12b-it-Q6_K.gguf` from `unsloth/gemma-4-12b-it-GGUF` (10 GB).
+
+**Make up an API key.** It is a password that you invent, not something you get from a provider:
+the gateway presents it to the model server, so that nothing else on your machine (the coding
+sandbox, for instance) can use the model. Generate one and store it in the Keychain:
+
+```sh
+openssl rand -hex 32                    # prints a random key; copy it
+triage secret llm-api-key               # paste it at the prompt
+```
+
+You do not need to keep the key anywhere else.
+
+**Tell the host tool** which port the model server will use:
+
+```sh
+triage init --repo ~/src/triage --llm-port 8012
+```
+
+**Run the model server** in a terminal window of its own, and leave it running:
+
+```sh
+~/src/triage-trusted/trusted/llm/run-llm.sh ~/models/gpt-oss-20b-MXFP4.gguf 8012
+```
+
+The script reads the key from the Keychain (macOS may ask you to allow that) and runs
+`llama-server` in the sandbox. It is ready when it prints that it is listening. The script and
+its sandbox profile have not been tested on macOS yet; if the server fails to start, its output
+says what the sandbox refused.
+
+Docker Desktop has a memory limit of its own for the containers (Settings → Resources). About
+8 GB should be enough for this app; lower the limit if it is set higher and memory is tight.
 
 ### 5. Start everything
 
