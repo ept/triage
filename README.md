@@ -52,7 +52,7 @@ This is an early version. What exists, and how far it has been tested:
 | Host tool `triage`           | Implemented; its logic is unit-tested and it builds on macOS, but `triage up` has **not yet been run against Docker** |
 | Container images             | **Not yet built with Docker.** The build steps of all three Dockerfiles have been replayed inside the real base images without Docker (except the Rust installation in the coding sandbox image), and the resulting gateway and app start and talk to each other |
 | LLM sandbox profile          | Written, **not yet tested on macOS**                                   |
-| Wrapper app `email-triage`   | First version (see "The wrapper app" below). Its windows, the approval of a request and the confinement of the web view have been tried on Linux with stand-ins for Docker and the gateway; it has **not yet been run on macOS**, for which it has only been type-checked |
+| Wrapper app `email-triage`   | First version (see "The wrapper app" below). Its windows, the approval of a request and the confinement of the web view have been tried on Linux with stand-ins for Docker and the gateway. On macOS only its self-test has been run, and **failed**; the fix for that has not been run there yet |
 | OAuth login (Gmail, Microsoft 365) | Gateway side implemented, untested against real providers; no consent flow in the host tool yet |
 | Scripts written by the local LLM, text from attachments, automatic dependency updates | Not started |
 
@@ -194,16 +194,21 @@ The wrapper app
 
 * It shows the app's web interface in a window that can reach the app and nothing else. All
   traffic of that window goes through a small proxy inside the wrapper, which passes on requests
-  for the app and refuses the rest; navigating elsewhere, opening windows, downloads, camera,
-  microphone and direct connections (WebRTC) are switched off; and pages have no channel to the
-  wrapper. Links to other sites therefore do nothing yet.
+  for the app and refuses the rest. On macOS, where the web view does not use a proxy for
+  addresses on the same machine, WebKit is additionally given a content rule list that blocks
+  every address but the app's, and the app is only loaded once that list is in place.
+  Navigating elsewhere, opening windows, downloads, camera, microphone and direct connections
+  (WebRTC) are switched off, and pages have no channel to the wrapper. Links to other sites
+  therefore do nothing yet.
 * Before a message goes to the coding agent, a window of the wrapper's own shows its exact text
   and asks. Closing that window, or quitting, means no.
 * Quitting (closing the main window, or Cmd-Q) stops and removes the containers.
 
 It is part of the trusted base, so build it from the reviewed copy. It needs macOS 14 or later.
 **Run the self-test first**: whether the confinement holds depends on how the system's web view
-behaves, and that has only been tried on Linux so far.
+behaves. On Linux it passes. On macOS the first version failed it: requests for other machines
+were refused, but requests for other ports of the same machine got through. The content rule
+list was added for that and has **not yet been run on macOS**.
 
 ```sh
 cd ~/src/triage-trusted/trusted/wrapper

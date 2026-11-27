@@ -187,7 +187,9 @@ fn mentions(log: &[String], id: &str) -> bool {
     })
 }
 
-enum Finish {
+enum Step {
+    /// The web view is confined (or could not be) and may load the test page.
+    Confined(Result<(), String>),
     Done,
 }
 
@@ -215,26 +217,37 @@ pub fn run(confined: bool) -> i32 {
     println!("web view: {:?}", wry::webview_version());
     println!("(takes about 20 seconds; a window opens and closes by itself)\n");
 
-    let event_loop = EventLoopBuilder::<Finish>::with_user_event().build();
+    let event_loop = EventLoopBuilder::<Step>::with_user_event().build();
     let window = WindowBuilder::new()
         .with_title("Email Triage self-test")
         .build(&event_loop)
         .expect("a window can be created");
     let record = stopped.clone();
-    let builder = WebViewBuilder::new().with_url(format!("http://{}/", app.address));
+    // As for the app: the web view starts empty and loads the page once it is confined.
     let builder = if confined {
-        view::restrict(builder, app.address, proxy.port(), move |what, url| {
-            record.lock().unwrap().push(format!("{what:?} {url}"))
-        })
+        view::restrict(
+            WebViewBuilder::new(),
+            app.address,
+            proxy.port(),
+            move |what, url| record.lock().unwrap().push(format!("{what:?} {url}")),
+        )
     } else {
-        builder
+        WebViewBuilder::new()
     };
     let webview = match crate::attach(builder, &window) {
         Ok(webview) => webview,
         Err(error) => return failed_to_start(&error.to_string()),
     };
-
     let wake = event_loop.create_proxy();
+    if confined {
+        let wake = wake.clone();
+        view::block_other_addresses(&webview, app.address, move |result| {
+            wake.send_event(Step::Confined(result)).ok();
+        });
+    } else {
+        wake.send_event(Step::Confined(Ok(()))).ok();
+    }
+
     let finished = app.finished.clone();
     std::thread::spawn(move || {
         let start = Instant::now();
@@ -242,14 +255,26 @@ pub fn run(confined: bool) -> i32 {
             std::thread::sleep(Duration::from_millis(100));
         }
         std::thread::sleep(Duration::from_secs(2));
-        wake.send_event(Finish::Done).ok();
+        wake.send_event(Step::Done).ok();
     });
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
+        match &event {
+            Event::UserEvent(Step::Confined(Ok(()))) => {
+                if let Err(error) = webview.load_url(&format!("http://{}/", app.address)) {
+                    std::process::exit(failed_to_start(&error.to_string()));
+                }
+            }
+            Event::UserEvent(Step::Confined(Err(reason))) => {
+                println!("FAILED: the web view could not be confined. {reason}");
+                std::process::exit(1);
+            }
+            _ => {}
+        }
         let done = matches!(
             event,
-            Event::UserEvent(Finish::Done)
+            Event::UserEvent(Step::Done)
                 | Event::WindowEvent {
                     event: WindowEvent::CloseRequested,
                     ..
@@ -304,7 +329,7 @@ fn verdict(app: &App, canary: &Log, proxy: &Proxy, stopped: &Log, url: &str) -> 
                 "stopped by the web view's rules"
             } else {
                 unseen += 1;
-                "no request was made"
+                "blocked before any request was made"
             };
             println!("{channel:<10} {destination:<26} {outcome}");
         }
@@ -323,7 +348,7 @@ fn verdict(app: &App, canary: &Log, proxy: &Proxy, stopped: &Log, url: &str) -> 
         app.requests.lock().unwrap().len(),
         proxy.passed_on()
     );
-    println!("attempts of which nothing was seen anywhere: {unseen}");
+    println!("attempts that were blocked before any request was made: {unseen}");
     let at_home = url
         .strip_prefix(&format!("http://{}", app.address))
         .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '?', '#']));

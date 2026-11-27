@@ -5,6 +5,9 @@
 //! wrapper itself and not by anything the app sends:
 //!
 //! * all its traffic goes through [`crate::proxy`], which reaches the app and nothing else;
+//! * on macOS, where the web view does not use a proxy for addresses on the same machine, a
+//!   content rule list makes WebKit itself refuse to load anything but the app's addresses
+//!   ([`block_other_addresses`]), and the app is only loaded once that list is in place;
 //! * it may navigate (as a whole, or in a frame) only within the app's origin;
 //! * it cannot open windows, start downloads, or use the camera, microphone or location;
 //! * the interface for direct connections between browsers (WebRTC), which does not go
@@ -36,6 +39,89 @@ pub fn navigation_allowed(url: &str, app: SocketAddr) -> bool {
     };
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     rest[..end] == app.to_string()
+}
+
+/// The rules that keep the web view from loading anything but the app, in the format of
+/// WebKit's content rule lists. Everything that would go over a network is blocked; then the
+/// app's own origin is exempted. Addresses that involve no network (`data:`, `about:`) are
+/// left alone: the app shows images inside emails that way.
+pub fn content_rules(app: SocketAddr) -> String {
+    let block = |filter: &str| serde_json::json!({"trigger": {"url-filter": filter}, "action": {"type": "block"}});
+    // The address ends where the path begins, so that nothing longer can pass for it.
+    let own = format!("^http://{}/", app.to_string().replace('.', "\\."));
+    serde_json::json!([
+        block("^https?://"),
+        block("^wss?://"),
+        block("^ftp://"),
+        {"trigger": {"url-filter": own}, "action": {"type": "ignore-previous-rules"}},
+    ])
+    .to_string()
+}
+
+/// Makes the web view itself refuse every address but the app's, where the proxy does not
+/// cover that (macOS). `ready` is called on the window thread once the rules are in place, or
+/// with the reason if they could not be put in place; the app must not be loaded before that,
+/// nor if it failed. Build the web view without an address, call this, and load the app's
+/// address in `ready`.
+#[cfg(target_os = "macos")]
+pub fn block_other_addresses(
+    webview: &wry::WebView,
+    app: SocketAddr,
+    ready: impl Fn(Result<(), String>) + 'static,
+) {
+    use block2::RcBlock;
+    use objc2::MainThreadMarker;
+    use objc2_foundation::{NSError, NSString};
+    use objc2_web_kit::{WKContentRuleList, WKContentRuleListStore};
+    use wry::WebViewExtMacOS;
+
+    let Some(main_thread) = MainThreadMarker::new() else {
+        return ready(Err("not called on the window thread".into()));
+    };
+    // SAFETY: called on the main thread, as the marker shows.
+    let Some(store) = (unsafe { WKContentRuleListStore::defaultStore(main_thread) }) else {
+        return ready(Err("WebKit has no store for content rule lists".into()));
+    };
+    let controller = webview.manager();
+    let completion = RcBlock::new(move |list: *mut WKContentRuleList, error: *mut NSError| {
+        // SAFETY: WebKit passes a valid rule list, or null together with an error (or null).
+        match unsafe { list.as_ref() } {
+            Some(list) => {
+                // SAFETY: the rule list is valid, and this runs on the main thread.
+                unsafe { controller.addContentRuleList(list) };
+                ready(Ok(()));
+            }
+            None => {
+                // SAFETY: as above.
+                let reason = unsafe { error.as_ref() }
+                    .map(|error| error.localizedDescription().to_string())
+                    .unwrap_or_else(|| "no reason given".into());
+                ready(Err(format!(
+                    "WebKit did not accept the content rules: {reason}"
+                )));
+            }
+        }
+    });
+    let identifier = NSString::from_str(&format!("email-triage-{}", app.port()));
+    let rules = NSString::from_str(&content_rules(app));
+    // SAFETY: all three arguments are valid objects and not null.
+    unsafe {
+        store.compileContentRuleListForIdentifier_encodedContentRuleList_completionHandler(
+            Some(&identifier),
+            Some(&rules),
+            Some(&completion),
+        );
+    }
+}
+
+/// See the macOS version: elsewhere the proxy covers every address, and there is nothing to do.
+#[cfg(not(target_os = "macos"))]
+pub fn block_other_addresses(
+    _webview: &wry::WebView,
+    _app: SocketAddr,
+    ready: impl Fn(Result<(), String>) + 'static,
+) {
+    ready(Ok(()));
 }
 
 /// Runs in every frame before any script of the page. Proxies do not apply to WebRTC, so its
@@ -118,6 +204,35 @@ pub fn own_page<'a>(html: String, followed: impl Fn(&str) + 'static) -> WebViewB
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_content_rules_exempt_only_the_app() {
+        let rules: serde_json::Value =
+            serde_json::from_str(&content_rules("127.0.0.1:8102".parse().unwrap())).unwrap();
+        let rules = rules.as_array().unwrap();
+        let filters: Vec<&str> = rules
+            .iter()
+            .map(|rule| rule["trigger"]["url-filter"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            filters,
+            [
+                "^https?://",
+                "^wss?://",
+                "^ftp://",
+                r"^http://127\.0\.0\.1:8102/"
+            ]
+        );
+        let actions: Vec<&str> = rules
+            .iter()
+            .map(|rule| rule["action"]["type"].as_str().unwrap())
+            .collect();
+        // The exemption comes last: it lifts the rules before it for the app's addresses.
+        assert_eq!(
+            actions,
+            ["block", "block", "block", "ignore-previous-rules"]
+        );
+    }
 
     #[test]
     fn navigation_stays_within_the_app() {

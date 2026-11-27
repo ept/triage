@@ -36,6 +36,8 @@ enum Message {
     Ui(Request),
     /// Everything is running; the app's interface is at this address, served on this port.
     Started { url: String, ui_port: u16 },
+    /// The app's window is confined to the app (or could not be), and may now load it.
+    Confined(Result<(), String>),
     /// Supervision has ended, with an error unless the user asked for it.
     Ended(Result<(), String>),
     /// The user chose an answer in the approval window with this id.
@@ -174,6 +176,8 @@ struct Windows {
     /// The app's interface, once it is running, and the proxy it reaches the app through.
     app: Option<Pane>,
     proxy: Option<Proxy>,
+    /// The address to load in the app's window as soon as the window is confined.
+    waiting_to_load: Option<String>,
     /// Open questions: the window, and where the answer goes. Dropping an entry answers no.
     questions: HashMap<WindowId, (Pane, mpsc::Sender<bool>)>,
     warnings: HashMap<WindowId, Pane>,
@@ -234,6 +238,29 @@ impl Windows {
                     self.show_status(target);
                 }
             }
+            Message::Confined(result) => {
+                let url = self.waiting_to_load.take();
+                match (result, &self.app, url) {
+                    (Ok(()), Some(pane), Some(url)) => {
+                        if let Err(error) = pane.webview.load_url(&url) {
+                            self.error = Some(format!("The app could not be shown: {error}"));
+                        }
+                    }
+                    (Err(reason), _, _) => {
+                        // Never show the app in a window that is not confined.
+                        self.app = None;
+                        self.error = Some(format!(
+                            "The window could not be confined to the app, so the app is not \
+                             shown. {reason}"
+                        ));
+                    }
+                    _ => {}
+                }
+                if self.error.is_some() && !self.quitting {
+                    self.app = None;
+                    self.show_status(target);
+                }
+            }
             Message::Ended(result) => {
                 if self.quitting {
                     return false; // the sandboxes are being stopped; wait for that
@@ -257,18 +284,18 @@ impl Windows {
         let app = SocketAddr::from((Ipv4Addr::LOCALHOST, ui_port));
         let proxy = Proxy::start(app).map_err(|error| format!("no proxy: {error}"))?;
         let proxy_port = proxy.port();
-        let url = url.to_string();
+        // The window starts empty. The app is loaded when `Confined` arrives.
         let pane = open(target, NAME, (1180.0, 800.0), move |_window| {
             // What is stopped is not reported anywhere: the page that tried is the app's,
             // and has no say here. `--self-test` shows that stopping works.
-            view::restrict(
-                WebViewBuilder::new().with_url(url),
-                app,
-                proxy_port,
-                |_what, _url| {},
-            )
+            view::restrict(WebViewBuilder::new(), app, proxy_port, |_what, _url| {})
         })?;
         pane.window.set_focus();
+        let wake = self.wake.clone();
+        view::block_other_addresses(&pane.webview, app, move |result| {
+            wake.send_event(Message::Confined(result)).ok();
+        });
+        self.waiting_to_load = Some(url.to_string());
         self.proxy = Some(proxy);
         self.app = Some(pane);
         self.status = None;
@@ -351,6 +378,7 @@ fn main() {
         error: None,
         app: None,
         proxy: None,
+        waiting_to_load: None,
         questions: HashMap::new(),
         warnings: HashMap::new(),
         quitting: false,

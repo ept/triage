@@ -27,6 +27,21 @@ wry = { version = "=0.57.3", features = ["mac-proxy"] }
 # The menu bar, without which copy and paste do not work in a window on macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "=0.21.2"
+# For the content rule list (see view.rs). These are the versions that wry itself uses.
+block2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSError",
+    "NSString",
+] }
+objc2-web-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "WKContentRuleList",
+    "WKContentRuleListStore",
+    "WKUserContentController",
+] }
 
 [dev-dependencies]
 

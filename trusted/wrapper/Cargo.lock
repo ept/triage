@@ -2430,7 +2430,11 @@ dependencies = [
 name = "triage-wrapper"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "muda",
+ "objc2",
+ "objc2-foundation",
+ "objc2-web-kit",
  "serde_json",
  "tao",
  "triage-host",
