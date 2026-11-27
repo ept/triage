@@ -93,6 +93,61 @@ def test_json_schema_is_requested(fake: FakeGateway) -> None:
     assert scripted.requests[0]["response_format"]["json_schema"]["schema"] == schema
 
 
+def test_thinking_gets_an_allowance_of_its_own(fake: FakeGateway) -> None:
+    scripted = ScriptedLlm()
+    llm = client_for(fake, scripted)
+    user = [{"role": "user", "content": "Hi"}]
+
+    # Without an allowance, nothing about thinking is said: the model does as it likes.
+    llm.chat(user, max_tokens=100)
+    assert scripted.requests[-1]["max_tokens"] == 100
+    assert "reasoning_budget_tokens" not in scripted.requests[-1]
+    assert "reasoning_effort" not in scripted.requests[-1]
+
+    # The allowance comes on top of the room for the answer, and the server enforces it.
+    llm.chat(user, max_tokens=100, thinking=400)
+    assert scripted.requests[-1]["max_tokens"] == 500
+    assert scripted.requests[-1]["reasoning_budget_tokens"] == 400
+    assert scripted.requests[-1]["reasoning_effort"] == "low"
+
+    llm.chat(user, max_tokens=100, thinking=0)
+    assert scripted.requests[-1]["max_tokens"] == 100
+    assert scripted.requests[-1]["reasoning_budget_tokens"] == 0
+    assert scripted.requests[-1]["reasoning_effort"] == "none"
+
+
+def test_a_model_without_effort_levels_is_asked_again_without(fake: FakeGateway) -> None:
+    scripted = ScriptedLlm(["first", "second"])
+    refused: list[dict[str, object]] = []
+
+    def handler(method: str, path: str, body: bytes) -> FakeResponse:
+        request = json.loads(body) if body else {}
+        if request.get("reasoning_effort") == "low":
+            refused.append(request)
+            message = 'reasoning_effort "low" is not supported by the chat template'
+            return FakeResponse.json({"error": {"message": message}}, 400)
+        return scripted.handler(method, path, body)
+
+    fake.llm_handler = handler
+    llm = LlmClient("http://gateway.test", transport=fake.transport())
+    user = [{"role": "user", "content": "Hi"}]
+    assert llm.chat(user, thinking=200).text == "first"
+    assert len(refused) == 1
+    assert scripted.requests[-1]["reasoning_budget_tokens"] == 200, "the budget still applies"
+    # It is not tried again.
+    assert llm.chat(user, thinking=200).text == "second"
+    assert len(refused) == 1
+
+    # Any other refusal is an error as before.
+    fake.llm_handler = lambda method, path, body: (
+        scripted.handler(method, path, body)
+        if method == "GET"
+        else FakeResponse.json({"error": {"message": "the request is too long"}}, 400)
+    )
+    with pytest.raises(LlmError, match="too long"):
+        LlmClient("http://gateway.test", transport=fake.transport()).chat(user, thinking=200)
+
+
 def test_unavailable_and_failing_servers(fake: FakeGateway) -> None:
     llm = client_for(fake, None)
     with pytest.raises(LlmUnavailableError):

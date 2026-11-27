@@ -24,6 +24,8 @@ from triage.store import MessageSummary, Store
 
 ANALYSER = "v1"
 MAX_BODY_CHARS = 4000
+# Room for thinking before the answer, in tokens (see LlmClient.stream_chat).
+THINKING_TOKENS = 200
 CATEGORIES = ("personal", "work", "newsletter", "notification", "transaction", "spam", "other")
 URGENCIES = ("low", "normal", "high")
 #: Folders whose messages are not worth analysing.
@@ -135,6 +137,7 @@ class Analyser:
             json_schema=SCHEMA,
             temperature=0.0,
             max_tokens=300,
+            thinking=THINKING_TOKENS,
         )
         return validate(_parse_json(result.text))
 

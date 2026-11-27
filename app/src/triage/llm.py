@@ -117,6 +117,7 @@ class LlmClient:
         )
         self._configured_model = model
         self._model: str | None = model
+        self._low_effort_refused = False
         self._lock = threading.Lock()
 
     def close(self) -> None:
@@ -159,16 +160,31 @@ class LlmClient:
         tools: Sequence[Tool] = (),
         temperature: float = 0.2,
         max_tokens: int = 1500,
+        thinking: int | None = None,
         json_schema: Mapping[str, Any] | None = None,
     ) -> Iterator[str | ChatResult]:
-        """Run one completion. Yields pieces of text as they arrive, then the ChatResult."""
+        """Run one completion. Yields pieces of text as they arrive, then the ChatResult.
+
+        ``max_tokens`` is the room for the answer. Many models think before they answer, and
+        the server counts that against the same limit, so a model that thinks at length would
+        return nothing at all. ``thinking`` is therefore a separate allowance, in tokens, that
+        the server is asked to enforce (0: do not think); without it the model thinks as much
+        as it likes, at the expense of the answer.
+        """
         body: dict[str, Any] = {
             "model": self.model(),
             "messages": list(messages),
             "stream": True,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": max_tokens + (thinking or 0),
         }
+        if thinking is not None:
+            # Both are options of llama.cpp's server. The budget is enforced for any model;
+            # the effort is a hint that only some models' templates understand.
+            body["reasoning_budget_tokens"] = thinking
+            effort = "none" if thinking == 0 else "low"
+            if effort == "none" or not self._low_effort_refused:
+                body["reasoning_effort"] = effort
         if tools:
             body["tools"] = list(tools)
         if json_schema is not None:
@@ -176,14 +192,17 @@ class LlmClient:
                 "type": "json_schema",
                 "json_schema": {"name": "result", "strict": True, "schema": dict(json_schema)},
             }
-        request = self._http.build_request("POST", "/v1/chat/completions", json=body)
-        try:
-            response = self._http.send(request, stream=True)
-        except httpx.HTTPError as exc:
-            self.forget_model()
-            raise LlmUnavailableError(
-                f"the local model cannot be reached: {type(exc).__name__}"
-            ) from exc
+        response = self._send(body)
+        if (
+            response.status_code == 400
+            and body.get("reasoning_effort") == "low"
+            and "reasoning_effort" in _error_text(response)
+        ):
+            # This model's template knows no such level. Do without, from now on.
+            response.close()
+            self._low_effort_refused = True
+            del body["reasoning_effort"]
+            response = self._send(body)
         try:
             if response.status_code != 200:
                 response.read()
@@ -199,6 +218,25 @@ class LlmClient:
             ) from exc
         finally:
             response.close()
+
+    def _send(self, body: Mapping[str, Any]) -> httpx.Response:
+        request = self._http.build_request("POST", "/v1/chat/completions", json=body)
+        try:
+            response = self._http.send(request, stream=True)
+        except httpx.HTTPError as exc:
+            self.forget_model()
+            raise LlmUnavailableError(
+                f"the local model cannot be reached: {type(exc).__name__}"
+            ) from exc
+        if response.status_code != 200:
+            try:
+                response.read()
+            except httpx.HTTPError as exc:
+                response.close()
+                raise LlmUnavailableError(
+                    f"the connection to the local model broke: {type(exc).__name__}"
+                ) from exc
+        return response
 
     def _read_stream(self, response: httpx.Response) -> Iterator[str | ChatResult]:
         text: list[str] = []
