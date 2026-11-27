@@ -31,10 +31,31 @@ type Log = Arc<Mutex<Vec<String>>>;
 const PAGE: &str = "<!doctype html><meta charset=utf-8><title>Self-test</title>\
                     <p id=status>running</p><script src=/selftest.js></script>";
 const SCRIPT: &str = include_str!("selftest.js");
-/// What a same-origin worker of the page does: fetch the address it is given.
-const WORKER: &str = "const to = decodeURIComponent(location.search.slice(4));\n\
-                      fetch(to, { mode: 'no-cors' }).then(() => postMessage('resolved'), \
-                      (e) => postMessage('rejected: ' + e));\n";
+/// What a same-origin worker of the page does: try the address it is given in the way it is
+/// told, or say which interfaces it has. Written to run as a dedicated, a shared or a service
+/// worker.
+const WORKER: &str = r#"
+const query = new URLSearchParams(self.location.search);
+const to = query.get('to'), kind = query.get('kind');
+const say = (message) => { try { postMessage(message); } catch (e) {} };
+const probe = () => ({
+  WebTransport: typeof WebTransport,
+  RTCPeerConnection: typeof RTCPeerConnection,
+});
+self.onconnect = (event) => event.ports[0].postMessage(probe());
+try {
+  if (kind === 'probe') say(probe());
+  else if (kind === 'ws') new WebSocket(to.replace(/^http:/, 'ws:'));
+  else if (kind === 'import') importScripts(to);
+  else if (kind === 'wt') {
+    if (typeof WebTransport !== 'undefined') new WebTransport(to.replace(/^http:/, 'https:'));
+  } else {
+    fetch(to, { mode: 'no-cors' }).then(() => say('resolved'), (e) => say('rejected: ' + e));
+  }
+} catch (e) {
+  say('threw: ' + e);
+}
+"#;
 /// The attempts, in the order of `selftest.js`.
 const CHANNELS: &[&str] = &[
     "fetch",
@@ -62,6 +83,13 @@ const CHANNELS: &[&str] = &[
     "font",
     "import",
     "worker",
+    "workerws",
+    "workerimport",
+    "workerwt",
+    "shared",
+    "sharedwt",
+    "service",
+    "servicewt",
     "preconnect",
     "prefetch",
     "preload",
@@ -433,6 +461,14 @@ fn failed_to_start(error: &str) -> i32 {
     2
 }
 
+fn available(value: &Value) -> &'static str {
+    match value.as_bool() {
+        Some(true) => "available",
+        Some(false) => "not available",
+        None => "not reported",
+    }
+}
+
 fn verdict(app: &App, canary: &Arrivals, proxy: &Proxy, stopped: &Log, url: &str) -> i32 {
     let canary = canary.lock().unwrap().clone();
     let marks = app.marks.lock().unwrap().clone();
@@ -535,14 +571,27 @@ fn verdict(app: &App, canary: &Arrivals, proxy: &Proxy, stopped: &Log, url: &str
                     ]
                     .iter()
                     .any(|name| found[name].as_str().is_some_and(|kind| kind != "undefined"));
-                    if direct || !found.is_object() {
+                    if !found.is_object() {
                         problems.push(format!(
-                            "interfaces that bypass proxies are available in frame {frame}: {found}"
+                            "could not check {frame} for interfaces that bypass proxies: {found}"
+                        ));
+                    } else if direct {
+                        problems.push(format!(
+                            "interfaces that bypass proxies are available in {frame}: {found}"
                         ));
                     }
                 }
-                println!("frames checked for ways around the proxy: {}", frames.len());
+                let names: Vec<&str> = frames.keys().map(String::as_str).collect();
+                println!(
+                    "frames and workers checked for ways around the proxy: {}",
+                    names.join(", ")
+                );
             }
+            println!(
+                "shared workers: {}; service workers: {}",
+                available(&report["workers"]["shared"]),
+                available(&report["workers"]["service"])
+            );
             println!(
                 "web view identifies as: {}",
                 report["userAgent"].as_str().unwrap_or("?")

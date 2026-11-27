@@ -19,6 +19,23 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const el = (tag, props) => Object.assign(document.createElement(tag), props || {});
 
+  const workerURL = (kind, url) => '/worker.js?kind=' + kind + '&to=' + encodeURIComponent(url);
+  const registerServiceWorker = (id, script) => {
+    if (!navigator.serviceWorker) return note(id, 'not available');
+    // A scope of its own, so that the worker never comes to control a page.
+    navigator.serviceWorker.register(script, { scope: '/scope/' + id + '/' }).then(
+      () => note(id, 'registered'), (e) => note(id, 'rejected: ' + e));
+  };
+  // What a worker says it has: the page's own check does not cover it.
+  const askWorker = (start) => new Promise((resolve) => {
+    try {
+      start(resolve);
+    } catch (e) {
+      resolve('threw: ' + e);
+    }
+    setTimeout(() => resolve('no answer'), 2000);
+  });
+
   const attempts = {
     fetch(id, url) {
       fetch(url, { mode: 'no-cors' }).then(
@@ -144,12 +161,26 @@
     import(id, url) {
       import(url).then(() => note(id, 'resolved'), (e) => note(id, 'rejected: ' + e));
     },
+    // Same-origin workers that try the address: off the page's thread, where no script of
+    // the wrapper runs. Shared and service workers also run outside the page.
     worker(id, url) {
-      // A same-origin worker that fetches the address: requests made off the page's thread.
-      const w = new Worker('/worker.js?to=' + encodeURIComponent(url));
+      const w = new Worker(workerURL('fetch', url));
       w.onmessage = (e) => note(id, 'worker: ' + e.data);
       w.onerror = () => note(id, 'worker onerror');
     },
+    workerws(id, url) { new Worker(workerURL('ws', url)); },
+    workerimport(id, url) { new Worker(workerURL('import', url)); },
+    workerwt(id, url) { new Worker(workerURL('wt', url)); },
+    shared(id, url) {
+      if (typeof SharedWorker === 'undefined') return note(id, 'not available');
+      new SharedWorker(workerURL('fetch', url));
+    },
+    sharedwt(id, url) {
+      if (typeof SharedWorker === 'undefined') return note(id, 'not available');
+      new SharedWorker(workerURL('wt', url));
+    },
+    service(id, url) { registerServiceWorker(id, workerURL('fetch', url)); },
+    servicewt(id, url) { registerServiceWorker(id, workerURL('wt', url)); },
     // The hints with which a page asks for connections or loads ahead of time.
     preconnect(id, url) {
       document.head.appendChild(el('link', { rel: 'preconnect', href: url }));
@@ -232,6 +263,28 @@
     await loaded(srcdoc);
     frames.srcdocIframe = frameInfo(srcdoc.contentWindow);
 
+    frames.dedicatedWorker = await askWorker((resolve) => {
+      const w = new Worker('/worker.js?kind=probe');
+      w.onmessage = (e) => resolve(e.data);
+      w.onerror = () => resolve('failed to start');
+    });
+    if (typeof SharedWorker !== 'undefined') {
+      frames.sharedWorker = await askWorker((resolve) => {
+        const w = new SharedWorker('/worker.js?kind=probe');
+        w.port.onmessage = (e) => resolve(e.data);
+        w.onerror = () => resolve('failed to start');
+      });
+    }
+    const workers = {
+      shared: typeof SharedWorker !== 'undefined',
+      service: !!navigator.serviceWorker,
+    };
+    if (navigator.serviceWorker) {
+      // Leave no registration behind (the control's web view keeps them on disk).
+      await navigator.serviceWorker.getRegistrations().then(
+        (all) => Promise.all(all.map((one) => one.unregister())), () => {});
+    }
+
     await sleep(1000);
     for (const ch of Object.keys(attempts)) {
       for (const host of ['ip', 'name', 'ext']) {
@@ -247,7 +300,7 @@
         sleep(1500).then(() => 'no answer'),
       ]);
     }
-    const report = { userAgent: navigator.userAgent, frames, capture };
+    const report = { userAgent: navigator.userAgent, frames, capture, workers };
     document.getElementById('status').textContent = 'reporting';
     await fetch('/report', { method: 'POST', body: JSON.stringify(report) });
 

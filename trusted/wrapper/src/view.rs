@@ -9,8 +9,11 @@
 //!   content rule list makes WebKit itself refuse to load anything but the app's addresses
 //!   ([`block_other_addresses`]), and the app is only loaded once that list is in place;
 //! * on macOS, WebKit is also told not to open connections ahead of time, which it otherwise
-//!   does when a link is clicked, before anything here is asked ([`data_store`]);
+//!   does when a link is clicked, before anything here is asked (`configuration`);
 //! * it keeps nothing on disk on macOS: no cache, no cookies;
+//! * on macOS, the parts of WebKit that the rules above do not reach are switched off in the
+//!   engine: WebRTC and WebTransport (also offered inside workers, where no script of the
+//!   wrapper runs), and service workers and shared workers (which run outside the page);
 //! * it may navigate (as a whole, or in a frame) only within the app's origin;
 //! * it cannot open windows, start downloads, or use the camera, microphone or location;
 //! * the interfaces that do not go through proxies (WebRTC for direct connections between
@@ -161,7 +164,7 @@ pub fn restrict<'a>(
     #[cfg(target_os = "macos")]
     let builder = {
         use wry::WebViewBuilderExtMacos;
-        builder.with_webview_configuration(data_store()?)
+        builder.with_webview_configuration(configuration()?)
     };
     let builder = builder
         .with_proxy_config(ProxyConfig::Http(ProxyEndpoint {
@@ -193,29 +196,44 @@ pub fn restrict<'a>(
     Ok(builder)
 }
 
-/// A configuration for the web view whose network session opens no connections ahead of time
-/// and keeps nothing on disk.
+/// The features of WebKit that are switched off for the app, by the names WebKit lists them
+/// under. The app uses none of them.
+///
+/// * `WebTransportEnabled`: connections over UDP, which no HTTP proxy carries and which the
+///   content rules are not consulted for. Pages and workers both have it, so removing it from
+///   pages by script is not enough.
+/// * `ServiceWorkersEnabled`, `SharedWorkerEnabled`: scripts that run outside the page that
+///   started them, and so outside what the wrapper sets up for the page.
+#[cfg(target_os = "macos")]
+const SWITCHED_OFF: &[&str] = &[
+    "WebTransportEnabled",
+    "ServiceWorkersEnabled",
+    "SharedWorkerEnabled",
+];
+
+/// A configuration for the web view that opens no connections ahead of time, keeps nothing
+/// on disk, and has the features in [`SWITCHED_OFF`] and WebRTC switched off.
 ///
 /// WebKit "preconnects": when a link is clicked, it opens a connection to the link's address
 /// at once, before the navigation handler is asked and without consulting the content rules.
 /// To an address on the same machine, that connection also bypasses the proxy. Nothing is
 /// sent over it, but a page could reach every local port that way, so it is switched off.
 ///
-/// The switch (`allowsServerPreconnect`) is only reachable through WebKit interfaces that
-/// Apple has not published, although they have been there since macOS 10.15.4. If any of
-/// them is missing, this fails rather than leave the web view less confined than it claims;
-/// and `--self-test` checks the effect, not the setting.
+/// All of this is only reachable through WebKit interfaces that Apple has not published,
+/// although they have been there for years. If an interface is missing, or a setting does
+/// not take, this fails rather than leave the web view less confined than it claims. A
+/// feature that this WebKit does not list at all is taken not to exist in it; `--self-test`
+/// checks the effect, not the settings.
 #[cfg(target_os = "macos")]
-fn data_store() -> Result<objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>, String> {
+fn configuration() -> Result<objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>, String> {
     use objc2::rc::{Allocated, Retained};
     use objc2::runtime::{AnyClass, AnyObject};
     use objc2::{ClassType, MainThreadMarker, MainThreadOnly, msg_send, sel};
-    use objc2_web_kit::{WKWebViewConfiguration, WKWebsiteDataStore};
+    use objc2_foundation::{NSArray, NSString};
+    use objc2_web_kit::{WKPreferences, WKWebViewConfiguration, WKWebsiteDataStore};
 
     let missing = |what: &str| {
-        format!(
-            "this version of WebKit has no {what}, which is needed to keep the web view from opening connections ahead of time"
-        )
+        format!("this version of WebKit has no {what}, which is needed to confine the web view")
     };
     let main_thread =
         MainThreadMarker::new().ok_or_else(|| "not called on the window thread".to_string())?;
@@ -238,6 +256,25 @@ fn data_store() -> Result<objc2::rc::Retained<objc2_web_kit::WKWebViewConfigurat
     }
     if !WKWebsiteDataStore::class().responds_to(sel!(_initWithConfiguration:)) {
         return Err(missing("_initWithConfiguration:"));
+    }
+    for (selector, name) in [
+        (
+            sel!(_setPeerConnectionEnabled:),
+            "_setPeerConnectionEnabled:",
+        ),
+        (sel!(_peerConnectionEnabled), "_peerConnectionEnabled"),
+        (sel!(_setEnabled:forFeature:), "_setEnabled:forFeature:"),
+        (sel!(_isEnabledForFeature:), "_isEnabledForFeature:"),
+    ] {
+        if !WKPreferences::class().responds_to(selector) {
+            return Err(missing(name));
+        }
+    }
+    if !WKPreferences::class()
+        .metaclass()
+        .responds_to(sel!(_features))
+    {
+        return Err(missing("+[WKPreferences _features]"));
     }
 
     // SAFETY: the class exists and its instances respond to the three selectors, whose
@@ -265,6 +302,40 @@ fn data_store() -> Result<objc2::rc::Retained<objc2_web_kit::WKWebViewConfigurat
     let configuration = unsafe { WKWebViewConfiguration::new(main_thread) };
     // SAFETY: both objects are valid, and this is the main thread.
     unsafe { configuration.setWebsiteDataStore(&store) };
+
+    // SAFETY: the configuration is valid, and this is the main thread.
+    let preferences = unsafe { configuration.preferences() };
+    // SAFETY: `- (void)_setPeerConnectionEnabled:(BOOL)` and `- (BOOL)_peerConnectionEnabled`,
+    // to which the class responds.
+    let webrtc: bool = unsafe {
+        let () = msg_send![&*preferences, _setPeerConnectionEnabled: false];
+        msg_send![&*preferences, _peerConnectionEnabled]
+    };
+    if webrtc {
+        return Err("WebKit did not accept the setting against WebRTC".into());
+    }
+    // SAFETY: `+ (NSArray<_WKFeature *> *)_features`, to which the class responds.
+    let features: Option<Retained<NSArray<AnyObject>>> =
+        unsafe { msg_send![WKPreferences::class(), _features] };
+    for feature in features.ok_or("WebKit did not list its features")?.iter() {
+        // SAFETY: every `_WKFeature` has `@property (readonly, copy) NSString *key`.
+        let key: Option<Retained<NSString>> = unsafe { msg_send![&*feature, key] };
+        let Some(key) = key.map(|key| key.to_string()) else {
+            continue;
+        };
+        if !SWITCHED_OFF.contains(&key.as_str()) {
+            continue;
+        }
+        // SAFETY: `- (void)_setEnabled:(BOOL) forFeature:(_WKFeature *)` and
+        // `- (BOOL)_isEnabledForFeature:(_WKFeature *)`, with a feature from WebKit's own list.
+        let still_on: bool = unsafe {
+            let () = msg_send![&*preferences, _setEnabled: false, forFeature: &*feature];
+            msg_send![&*preferences, _isEnabledForFeature: &*feature]
+        };
+        if still_on {
+            return Err(format!("WebKit did not switch off its feature {key}"));
+        }
+    }
     Ok(configuration)
 }
 
