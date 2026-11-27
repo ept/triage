@@ -33,6 +33,8 @@ model_dir=$(dirname "$model")
 # --jinja: use the model's chat template, which is what makes tool calls work.
 # --offline: never download anything.
 # --no-webui: only the API is needed.
+# --cache-ram: the server keeps the state of earlier prompts in memory to answer faster, by
+#   default up to 8 GB on top of the model itself. Limit that to 2 GB.
 # The key is passed through the environment, so that it does not show up in the process list.
 export LLAMA_API_KEY="$TRIAGE_LLM_API_KEY"
 exec sandbox-exec \
@@ -44,4 +46,4 @@ exec sandbox-exec \
     --model "$model" \
     --host 127.0.0.1 --port "$port" \
     --jinja --offline --no-webui \
-    --ctx-size 16384
+    --ctx-size 16384 --cache-ram 2048
