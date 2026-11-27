@@ -632,4 +632,29 @@ mod tests {
             "git".to_string()
         ]));
     }
+
+    /// Cargo refuses to build any package of a workspace unless the manifests of all its
+    /// members are present, so the gateway's Dockerfile must copy every member.
+    #[test]
+    fn the_gateway_image_build_copies_every_workspace_member() {
+        let workspace = include_str!("../../Cargo.toml");
+        let dockerfile = include_str!("../../docker/gateway.Dockerfile");
+        let members = workspace
+            .lines()
+            .find_map(|line| line.strip_prefix("members = ["))
+            .and_then(|rest| rest.strip_suffix(']'))
+            .expect("the workspace lists its members on one line");
+        let members: Vec<&str> = members
+            .split(',')
+            .map(|member| member.trim().trim_matches('"'))
+            .collect();
+        assert!(members.contains(&"gateway") && members.len() >= 2);
+        for member in members {
+            let copy = format!("COPY {member} ./{member}");
+            assert!(
+                dockerfile.lines().any(|line| line == copy),
+                "gateway.Dockerfile lacks `{copy}`"
+            );
+        }
+    }
 }

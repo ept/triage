@@ -49,8 +49,8 @@ This is an early version. What exists, and how far it has been tested:
 | Gateway                      | Implemented; tested against a real IMAP server (Dovecot)               |
 | App: sync, parsing, search   | Implemented; tested against the real gateway and Dovecot               |
 | App: assistant, policy, analysis, web interface | Implemented; tested with a scripted stand-in for the model, and in a browser through the real gateway's relay. **Not yet tried with a real local model** |
-| Host tool `triage`           | Implemented; its logic is unit-tested, but it has **not yet been run against Docker or on macOS** |
-| Container images             | Dockerfiles written, **not yet built** (the gateway does build as a static binary) |
+| Host tool `triage`           | Implemented; its logic is unit-tested and it builds on macOS, but `triage up` has **not yet been run against Docker** |
+| Container images             | **Not yet built with Docker.** The build steps of all three Dockerfiles have been replayed inside the real base images without Docker (except the Rust installation in the coding sandbox image), and the resulting gateway and app start and talk to each other |
 | LLM sandbox profile          | Written, **not yet tested on macOS**                                   |
 | Wrapper app (Tauri)          | Not started; `triage up` and a normal browser stand in for it          |
 | OAuth login (Gmail, Microsoft 365) | Gateway side implemented, untested against real providers; no consent flow in the host tool yet |
