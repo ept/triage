@@ -74,8 +74,9 @@ the like).
 
 ### `POST /v1/folders/create`
 
-Request `{"account": "work", "name": "Triage/Newsletters"}`. Response `{}`. The name must not
-collide with a protected folder name. Folders cannot be deleted or renamed.
+Request `{"account": "work", "name": "Triage/Newsletters"}`. Response `{}`. A name that exists
+already is a `bad_request`; a name that could be mistaken for a protected folder is `forbidden`.
+Folders cannot be deleted or renamed.
 
 ### `POST /v1/folders/status`
 
@@ -99,7 +100,8 @@ Lists message metadata in ascending UID order. Request:
 {"account": "work", "folder": "INBOX", "uid_min": 1, "uid_max": null, "limit": 2000}
 ```
 
-`uid_min` defaults to 1, `uid_max` to no upper bound, `limit` to 2000 (which is also the maximum).
+`uid_min` defaults to 1, `uid_max` to no upper bound, `limit` to 2000 (which is also the maximum;
+a larger value is a `bad_request`).
 Response:
 
 ```json
@@ -178,8 +180,9 @@ Every operation in this section is recorded in the operation log.
 ```
 
 Response `{}`. The permitted flags are `\Seen`, `\Flagged`, `\Answered`, and keywords matching
-`[A-Za-z$][A-Za-z0-9$_.-]{0,63}`. `\Deleted` and `\Draft` are forbidden. At most 500 UIDs per
-request.
+`[A-Za-z$][A-Za-z0-9$_.-]{0,63}`. Any other flag starting with a backslash, in particular
+`\Deleted` and `\Draft`, is `forbidden`; a malformed keyword is a `bad_request`. At most 500 UIDs
+per request.
 
 ### `POST /v1/messages/move`
 
@@ -196,7 +199,9 @@ Response:
 ```
 
 `new_uid` and `destination_uid_validity` are `null` if the server does not report them. The
-destination must not be a protected folder. Moving to the trash or junk folder counts as a
+destination must not be a protected folder (`forbidden`) and must differ from the source
+(`bad_request`). UIDs that do not exist are left out of `moved`. Moving to the trash or junk
+folder counts as a
 deletion for the purpose of the deletion rate warning. Messages can never be deleted permanently.
 At most 500 UIDs per request.
 
@@ -223,6 +228,10 @@ Response `{"folder": "Drafts", "message_id": "<...@example.org>"}`.
   fails with `forbidden`.
 * `name` is optional. `subject` is at most 500 characters, `body` at most 100,000 characters, and
   there are at most 50 recipients, at least one of them in `to`.
+* Subject, body and names must not contain invisible characters (zero-width characters, bidi
+  overrides, tag characters and the like); single joiners as used by some scripts and emoji are
+  tolerated. Such text is `forbidden`.
+* An account without a drafts folder fails with `unsupported`.
 
 ### `GET /v1/log?after=<seq>&limit=<n>`
 
@@ -262,8 +271,10 @@ approved it in a dialog shown by the wrapper app.
 ```
 
 `kind` is `feature`, `bug`, or `reply` (an answer to a question from the coding agent). `text` is
-plain text of at most 4,000 characters without control characters other than newline and tab. At
-most 5 requests can be pending at a time. Response (status 202):
+plain text of at most 4,000 characters without control characters other than newline and tab,
+and without any invisible characters (`forbidden`), since the user must be able to see everything
+that is sent. At most 5 requests can be pending at a time; a further one is `forbidden`. Response
+(status 202):
 
 ```json
 {"id": "cr-7f3a...", "state": "pending"}
@@ -278,8 +289,8 @@ most 5 requests can be pending at a time. Response (status 202):
 
 Output of the coding agent, to be displayed in the user interface. This text comes from a sandbox
 with internet access: treat it as untrusted, never render remote content from it, and do not put
-it into the local LLM's context. `wait` (at most 60) makes the request block until an event with a
-higher sequence number is available.
+it into the local LLM's context. `wait` (in seconds; values above 60 are treated as 60) makes the
+request block until an event with a higher sequence number is available.
 
 ```json
 {"events": [{"seq": 12, "time": "...", "request_id": "cr-7f3a...", "kind": "text",
