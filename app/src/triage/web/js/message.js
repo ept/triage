@@ -151,7 +151,9 @@ function render(message) {
         on: { click: () => show("html") } }),
     );
   }
-  viewer.append(
+  // analysisView and attachmentsView return null when there is nothing to show, and
+  // Node.append would turn null into the text "null".
+  const parts = [
     el("div", { class: "viewer-head" },
       el("h2", { class: "viewer-subject", text: message.subject || "(no subject)" }),
       el("button", { type: "button", class: "small", id: "viewer-close", text: "Close",
@@ -166,7 +168,8 @@ function render(message) {
     attachmentsView(message.attachments),
     toggle,
     body,
-  );
+  ];
+  viewer.append(...parts.filter((part) => part !== null && part !== undefined));
   // Plain text is the default; the formatted view is the user's choice.
   show("text");
 }

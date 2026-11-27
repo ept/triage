@@ -57,10 +57,33 @@ Uncommitted changes are never deployed.
 ## Commands
 
 ```sh
-# App
-cd app && uv run pytest && uv run ruff check && uv run ruff format --check
-
 # Trusted base (the integration tests need the `dovecot` binary, which this sandbox has)
 cd trusted && cargo test && cargo clippy --all-targets && cargo fmt --check
 cargo check -p triage-host --target aarch64-apple-darwin   # the host tool must build for macOS
+cargo build -p triage-gateway                              # used by the app's end-to-end tests
+
+# App. With TRIAGE_GATEWAY_BIN the end-to-end tests against the real gateway run too; the
+# interface tests need Chromium. Both kinds skip themselves when their requirement is missing,
+# so check the summary line for skipped tests before you rely on a green run.
+cd app && TRIAGE_GATEWAY_BIN=../trusted/target/debug/triage-gateway uv run pytest
+cd app && uv run ruff check && uv run ruff format --check && uv run mypy
+
+# Try the interface with made-up mail and a pretend model
+cd app && uv run python -m triage.testing.demo --port 8765
 ```
+
+## Where things are in the app
+
+| Module (`app/src/triage/`) | What it does |
+|----------------------------|--------------|
+| `gateway.py`, `llm.py`     | Clients for the gateway's sandbox API and for the local model behind its relay |
+| `sync.py`, `store.py`, `mime.py` | Local copy of the mail: sync, SQLite cache with full-text search, parsing and HTML sanitising |
+| `agent.py`                 | The assistant and its tools; also applies the policy to new mail |
+| `analysis.py`              | Background analysis of each new message |
+| `policy.py`, `settings.py`, `chats.py`, `activity.py` | Policy (Git-versioned), settings, conversations, operation log and undo |
+| `server.py`                | HTTP API, static files, background threads |
+| `web/`                     | The web interface: plain ES modules and CSS, no build step |
+| `testing/`                 | In-memory fake gateway, scripted stand-in for the model, demo launcher |
+
+The API between `server.py` and `web/` has no separate description: `server.py` is the reference,
+and `tests/ui/stub_server.py` mirrors it for the interface tests. Change both together.

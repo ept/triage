@@ -47,16 +47,29 @@ This is an early version. What exists, and how far it has been tested:
 | Part                         | State                                                                  |
 |------------------------------|------------------------------------------------------------------------|
 | Gateway                      | Implemented; tested against a real IMAP server (Dovecot)               |
+| App: sync, parsing, search   | Implemented; tested against the real gateway and Dovecot               |
+| App: assistant, policy, analysis, web interface | Implemented; tested with a scripted stand-in for the model, and in a browser through the real gateway's relay. **Not yet tried with a real local model** |
 | Host tool `triage`           | Implemented; its logic is unit-tested, but it has **not yet been run against Docker or on macOS** |
+| Container images             | Dockerfiles written, **not yet built** (the gateway does build as a static binary) |
 | LLM sandbox profile          | Written, **not yet tested on macOS**                                   |
-| App: sync, parsing, cache    | See `app/`                                                             |
 | Wrapper app (Tauri)          | Not started; `triage up` and a normal browser stand in for it          |
 | OAuth login (Gmail, Microsoft 365) | Gateway side implemented, untested against real providers; no consent flow in the host tool yet |
-| Scripts written by the local LLM, automatic dependency updates | Not started                          |
+| Scripts written by the local LLM, text from attachments, automatic dependency updates | Not started |
 
 Until the wrapper app exists, two of the specification's requirements are not met: the web
 interface runs in a normal browser, which does not stop a page from navigating elsewhere, and the
 approval of change requests happens in the terminal rather than in a native dialog.
+
+Other known gaps: the policy is applied to each new message when it arrives, so rules that depend
+on something happening later ("when I have sent the draft, archive the original") are not carried
+out yet; server-side search only accepts ASCII; and text that an email hides from human readers
+is still visible to the model.
+
+To see the interface without any of the setup below, with made-up mail and a pretend model:
+
+```sh
+cd app && uv run python -m triage.testing.demo --port 8765
+```
 
 Setting it up (macOS)
 ---------------------
@@ -136,10 +149,16 @@ Development
 The coding sandbox image (`coding/Dockerfile`) has everything needed:
 
 ```sh
-cd app && uv run pytest && uv run ruff check && uv run ruff format --check
 cd trusted && cargo test && cargo clippy --all-targets && cargo fmt --check
+cd trusted && cargo build -p triage-gateway
+cd app && TRIAGE_GATEWAY_BIN=../trusted/target/debug/triage-gateway uv run pytest
+cd app && uv run ruff check && uv run ruff format --check && uv run mypy
 ```
 
-The gateway's integration tests start a throwaway Dovecot server and need the `dovecot` binary
-(Debian package `dovecot-imapd`). All test data is synthetic; never add real email to this
-repository.
+* The gateway's integration tests start a throwaway Dovecot server and need the `dovecot` binary
+  (Debian package `dovecot-imapd`).
+* With `TRIAGE_GATEWAY_BIN` set, the app's tests include end-to-end tests against the real gateway
+  and Dovecot. Without it they are skipped.
+* The interface tests drive Chromium (`/usr/bin/chromium`) and are skipped if it is missing.
+
+All test data is synthetic; never add real email to this repository.

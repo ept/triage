@@ -120,6 +120,9 @@ def test_the_interface_works_through_the_gateway(relay_url: str) -> None:
         viewer = page.locator("#viewer")
         expect(viewer).to_be_visible()
         expect(viewer).to_contain_text("ighthouse")
+        # Parts of the viewer that have nothing to show must leave no trace.
+        expect(viewer).not_to_contain_text("null")
+        expect(viewer).not_to_contain_text("undefined")
 
         # The other views load from the real backend.
         page.goto(f"{relay_url}/#policy")
