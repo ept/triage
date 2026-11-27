@@ -115,6 +115,16 @@ def _function(
     }
 
 
+# What process_messages can do to a message, by the name under which a request asks for it,
+# and the tool that does it. A job is given only the tools for what the user asked for: a
+# message that talks the model into something else then finds no tool to do it with.
+BATCH_ACTIONS = {
+    "flag": "flag_messages",
+    "mark_read": "mark_messages",
+    "move": "move_messages",
+    "draft_reply": "draft_reply",
+}
+
 _IDS = {
     "type": "array",
     "items": {"type": "string"},
@@ -159,11 +169,16 @@ TOOLS: list[dict[str, Any]] = [
         ["ids", "destination"],
     ),
     _function(
-        "mark_messages",
-        "Mark messages as read or unread, or flag or unflag them. A flag highlights a message "
-        "for the user.",
-        {"ids": _IDS, "read": {"type": "boolean"}, "flagged": {"type": "boolean"}},
+        "flag_messages",
+        "Flag messages, which highlights them for the user to look at, or remove the flag.",
+        {"ids": _IDS, "flagged": {"type": "boolean", "description": "false removes the flag"}},
         ["ids"],
+    ),
+    _function(
+        "mark_messages",
+        "Mark messages as read or as unread.",
+        {"ids": _IDS, "read": {"type": "boolean"}},
+        ["ids", "read"],
     ),
     _function(
         "draft_reply",
@@ -202,6 +217,11 @@ TOOLS: list[dict[str, Any]] = [
                 "type": "string",
                 "description": "What to do with each message that fits: everything the user "
                 "asked for, with its conditions and what replies should say.",
+            },
+            "actions": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(BATCH_ACTIONS)},
+                "description": "What may be done to a message: only what the user asked for",
             },
             "ids": _IDS,
             "query": {"type": "string", "description": "Words to look for; may be empty"},
@@ -268,9 +288,18 @@ The user's policy for handling their email:
 
 AUTOMATIC_TITLE = "Automatic actions"
 AUTOMATIC_TOOL_NAMES = frozenset(
-    {"read_message", "list_folders", "move_messages", "mark_messages", "draft_reply"}
+    {
+        "read_message",
+        "list_folders",
+        "move_messages",
+        "flag_messages",
+        "mark_messages",
+        "draft_reply",
+    }
 )
-ACTING_TOOL_NAMES = frozenset({"move_messages", "mark_messages", "draft_reply", "draft_message"})
+ACTING_TOOL_NAMES = frozenset(
+    {"move_messages", "flag_messages", "mark_messages", "draft_reply", "draft_message"}
+)
 
 AUTOMATIC_PROMPT = """\
 You are the assistant built into Email Triage, an app that helps {user} deal with their email. \
@@ -293,7 +322,7 @@ The user's policy for handling their email:
 </policy>"""
 
 READING_TOOL_NAMES = frozenset({"search_mail", "read_message", "list_folders"})
-BATCH_TOOL_NAMES = frozenset({"move_messages", "mark_messages", "draft_reply"})
+BATCH_TOOL_NAMES = frozenset(BATCH_ACTIONS.values())
 
 BATCH_PROMPT = """\
 You are the assistant built into Email Triage, an app that helps {user} deal with their email. \
@@ -304,8 +333,8 @@ Which messages are meant: {matching}
 What is to be done: {instruction}
 
 Rules:
-- First decide whether this message is one of those that are meant. If it is not, do nothing \
-and answer exactly: Skipped
+- First decide whether this message is one of those that are meant. If it is not, do nothing: \
+use no tool, and answer exactly: Skipped
 - If it is, carry out what is to be done for this one message with the tools. Then say in one \
 short sentence what you did and why.
 - Do only what is asked for. If nothing that is asked for applies to this message, do nothing \
@@ -336,19 +365,36 @@ for a request to do something automatically in future, for a request to change t
 for anything that cannot be understood without the earlier conversation.
 - "which": if "each" is true, a description of the messages that are meant, taken from the \
 request, for example: requests from customers for a refund. Otherwise "".
-- "folder": the folder that the request names, for example INBOX; "all" if it asks for all \
-folders; "" if it names none.
-- "days": how many days back the request reaches, or 0 if it does not say."""
+- "actions": what is to be done to the messages, as a list of: "flag" (flag or highlight), \
+"mark_read" (mark as read or unread), "move" (move, archive or delete), "draft_reply". Only \
+what the request asks for.
+- "folder": the folder in which the messages are to be looked for, if the request names one, \
+for example INBOX; "all" if it asks for all folders; "" if it names none. A folder that \
+messages are to be moved to is not meant here.
+- "days": how many days back the request reaches, or 0 if it does not say.
+
+Examples:
+Flag every email in which a customer complains, and draft an apology to each.
+{"each": true, "which": "complaints from customers", "actions": ["flag", "draft_reply"], \
+"folder": "", "days": 0}
+Go through the last two weeks of my inbox and move all automatic notifications to the archive.
+{"each": true, "which": "automatic notifications", "actions": ["move"], "folder": "INBOX", \
+"days": 14}
+What did Sam say about the contract?
+{"each": false, "which": "", "actions": [], "folder": "", "days": 0}
+Delete the message from the bank that came this morning.
+{"each": false, "which": "", "actions": [], "folder": "", "days": 0}"""
 
 ROUTE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "each": {"type": "boolean"},
         "which": {"type": "string"},
+        "actions": {"type": "array", "items": {"type": "string", "enum": list(BATCH_ACTIONS)}},
         "folder": {"type": "string"},
         "days": {"type": "integer"},
     },
-    "required": ["each", "which", "folder", "days"],
+    "required": ["each", "which", "actions", "folder", "days"],
     "additionalProperties": False,
 }
 
@@ -534,6 +580,9 @@ class Agent:
         if not isinstance(which, str) or not which.strip():
             return None
         arguments: dict[str, Any] = {"matching": which.strip()[:500], "instruction": text}
+        actions = route.get("actions")
+        if isinstance(actions, list) and actions:
+            arguments["actions"] = [a for a in actions if a in BATCH_ACTIONS]
         folder = route.get("folder")
         folder = folder.strip() if isinstance(folder, str) else ""
         if folder.lower() != "all":
@@ -1015,32 +1064,40 @@ class _Context:
             f"there is no folder called {_one_line(wanted, 60)} in the account {account}"
         )
 
-    def tool_mark_messages(self, arguments: dict[str, Any]) -> Outcome:
-        messages = self._messages(arguments.get("ids"))
-        read = arguments.get("read")
-        flagged = arguments.get("flagged")
-        add: list[str] = []
-        remove: list[str] = []
-        described = []
-        if isinstance(read, bool):
-            (add if read else remove).append("\\Seen")
-            described.append("read" if read else "unread")
-        if isinstance(flagged, bool):
-            (add if flagged else remove).append("\\Flagged")
-            described.append("flagged" if flagged else "not flagged")
-        if not add and not remove:
-            raise ToolError("say whether to mark the messages read/unread or flagged/unflagged")
-        for (account, folder, uid_validity), group in self._by_folder(messages).items():
+    def _set_flag(
+        self, messages: Sequence[StoredMessage], flag: str, on: bool, what: str
+    ) -> Outcome:
+        """Set or clear one flag. Messages that are in that state already are left alone."""
+        changing = [m for m in messages if (flag in m.flags) != on]
+        if not changing:
+            already = "is" if len(messages) == 1 else "are"
+            return Outcome(
+                f"Nothing changed: the {_plural(len(messages), 'message')[2:]} {already} "
+                f"{what} already.",
+                f"Nothing to do: already {what}",
+            )
+        add, remove = ([flag], []) if on else ([], [flag])
+        for (account, folder, uid_validity), group in self._by_folder(changing).items():
             uids = [m.key.uid for m in group]
             self.gateway.set_flags(account, folder, uid_validity, uids, add=add, remove=remove)
             updated = {m.key.uid: (set(m.flags) | set(add)) - set(remove) for m in group}
             self.store.update_flags(account, folder, uid_validity, updated)
-        what = " and ".join(described)
-        return Outcome(
-            f"Marked {_plural(len(messages), 'message')} as {what}.",
-            f"Marked {_plural(len(messages), 'message')} as {what}",
-            changed_mail=True,
-        )
+        text = f"Marked {_plural(len(changing), 'message')} as {what}"
+        return Outcome(f"{text}.", text, changed_mail=True)
+
+    def tool_flag_messages(self, arguments: dict[str, Any]) -> Outcome:
+        messages = self._messages(arguments.get("ids"))
+        on = arguments.get("flagged", True)
+        if not isinstance(on, bool):
+            raise ToolError("flagged must be true or false")
+        return self._set_flag(messages, "\\Flagged", on, "flagged" if on else "not flagged")
+
+    def tool_mark_messages(self, arguments: dict[str, Any]) -> Outcome:
+        messages = self._messages(arguments.get("ids"))
+        read = arguments.get("read")
+        if not isinstance(read, bool):
+            raise ToolError("say whether to mark the messages as read (true) or unread (false)")
+        return self._set_flag(messages, "\\Seen", read, "read" if read else "unread")
 
     def tool_draft_reply(self, arguments: dict[str, Any]) -> Outcome:
         message = self._message(arguments.get("id"))
@@ -1119,6 +1176,12 @@ class _Context:
             raise ToolError("say what is to be done with each message (instruction)")
         matching = arguments.get("matching")
         matching = matching.strip() if isinstance(matching, str) else ""
+        actions = arguments.get("actions")
+        allowed = {
+            BATCH_ACTIONS[a]
+            for a in (actions if isinstance(actions, list) else ())
+            if isinstance(a, str) and a in BATCH_ACTIONS
+        } or set(BATCH_TOOL_NAMES)  # not said: whatever the instruction turns out to need
         more = False
         candidates: Sequence[MessageSummary]
         if arguments.get("ids"):
@@ -1152,7 +1215,9 @@ class _Context:
             )
             handle = self._handle(message)
             try:
-                done, problems, said = self._work_on(message, matching, instruction.strip())
+                done, problems, said = self._work_on(
+                    message, matching, instruction.strip(), allowed
+                )
             except ToolError as exc:
                 done, problems, said = [], [str(exc)], ""
             if not done and not problems:
@@ -1252,7 +1317,7 @@ class _Context:
         return selected
 
     def _work_on(
-        self, message: MessageSummary, matching: str, instruction: str
+        self, message: MessageSummary, matching: str, instruction: str, allowed: set[str]
     ) -> tuple[list[Outcome], list[str], str]:
         """Put one message before the model, with the instruction and the tools to act on it.
 
@@ -1271,7 +1336,7 @@ class _Context:
                 matching=neutralise(matching) or "every message you are shown",
                 instruction=neutralise(instruction),
             ),
-            tools=[t for t in TOOLS if t["function"]["name"] in BATCH_TOOL_NAMES],
+            tools=[t for t in TOOLS if t["function"]["name"] in allowed],
             only=message.key,
         )
         messages: list[dict[str, Any]] = [
@@ -1314,10 +1379,11 @@ class _Context:
                 messages.append(
                     {"role": "tool", "tool_call_id": call.id, "content": outcome.content}
                 )
-                if outcome.ok:
-                    done.append(outcome)
-                else:
+                if not outcome.ok:
                     problems.append(outcome.summary)
+                elif outcome.changed_mail:
+                    # A call that changed nothing (flagging what is flagged) does not count.
+                    done.append(outcome)
         return done, ([] if done else problems), said
 
     # -- policy and app changes

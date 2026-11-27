@@ -79,7 +79,7 @@ class ScriptedLlm:
         # Before anything else, the assistant asks whether a request is about doing something
         # to every message of a kind. That question is answered from here, not from the
         # script: "no" unless a test says otherwise.
-        self.route: Mapping[str, Any] | str = {"each": False, "which": "", "folder": "", "days": 0}
+        self.route: Mapping[str, Any] | str = {"each": False}
         self.route_requests: list[dict[str, Any]] = []
 
     def handler(self, method: str, path: str, body: bytes) -> FakeResponse:

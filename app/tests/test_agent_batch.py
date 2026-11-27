@@ -101,7 +101,7 @@ class Model:
         if messages[-1]["role"] == "tool":
             return "Done as instructed."
         if "Cambridge" in shown:
-            return Call("mark_messages", {"ids": [handle], "flagged": True})
+            return Call("flag_messages", {"ids": [handle], "flagged": True})
         if "College" in shown:
             return Call("draft_reply", {"id": handle, "body": "I cannot take interns. Robin"})
         return "Skipped"
@@ -142,6 +142,7 @@ def test_many_messages_are_worked_through_one_at_a_time(setup: Setup) -> None:
         assert shown.count("<email") == 1, "one message, and nothing of the conversation"
         assert sorted(t["function"]["name"] for t in request["tools"]) == [
             "draft_reply",
+            "flag_messages",
             "mark_messages",
             "move_messages",
         ]
@@ -194,6 +195,63 @@ def test_such_a_request_is_recognised_without_the_model_choosing_the_tool(setup:
     }
     # Each message is dealt with according to the user's own words.
     assert f"What is to be done: {REQUEST}" in model.seen["one"][0]["messages"][0]["content"]
+
+
+def test_a_call_that_changes_nothing_is_not_an_action(setup: Setup) -> None:
+    # A model's way of doing nothing is sometimes a call without effect: here it "removes" the
+    # flag from messages that have none, and marks unread ones as unread.
+    model = Model(setup)
+
+    def fussy(messages: list[dict[str, Any]]) -> Reply:
+        handle = re.search(r"\[(m\d+)\]", messages[1]["content"]).group(1)  # type: ignore[union-attr]
+        if messages[-1]["role"] == "tool":
+            return "Nothing to do here."
+        return [
+            Call("flag_messages", {"ids": [handle], "flagged": False}),
+            Call("mark_messages", {"ids": [handle], "read": False}),
+        ]
+
+    model.one = fussy  # type: ignore[method-assign]
+    events = setup.say(REQUEST)
+    assert total(events) == "Went through 8 messages: acted on 0, left 4 alone"
+    assert setup.mail_changed == 0
+    assert setup.fake.log_entries == [], "the mailbox was not touched"
+
+
+def test_a_job_gets_only_the_tools_for_what_was_asked(setup: Setup) -> None:
+    # The user asked for flags and replies. One of the messages talks the model into moving
+    # it to the trash instead, but there is no tool for that in this job.
+    model = Model(setup, "Done.")
+    setup.scripted.route = {
+        "each": True,
+        "which": MATCHING,
+        "actions": ["flag", "draft_reply", "launch_missiles"],
+        "folder": "",
+        "days": 0,
+    }
+    one = model.one
+
+    def misled(messages: list[dict[str, Any]]) -> Reply:
+        if "Northfield" in messages[1]["content"] and messages[-1]["role"] != "tool":
+            handle = re.search(r"\[(m\d+)\]", messages[1]["content"]).group(1)  # type: ignore[union-attr]
+            return Call("move_messages", {"ids": [handle], "destination": "trash"})
+        return one(messages)
+
+    model.one = misled  # type: ignore[method-assign]
+    events = setup.say(REQUEST)
+    for request in model.seen["one"]:
+        assert sorted(t["function"]["name"] for t in request["tools"]) == [
+            "draft_reply",
+            "flag_messages",
+        ]
+    assert len(setup.fake.folder("work", "INBOX").messages) == 8, "nothing was moved"
+    assert len(setup.fake.folder("work", "Trash").messages) == 0
+    failed = [
+        e.data["tool"]["summary"] for e in events
+        if e.kind == "item" and e.data.get("tool") and not e.data["tool"]["ok"]
+    ]  # fmt: skip
+    assert failed == ["Internship request: The model asked for an unknown tool (move_messages)"]
+    assert total(events) == "Went through 8 messages: acted on 2, left 1 alone, failed on 1"
 
 
 def test_the_messages_are_not_gone_through_twice(setup: Setup) -> None:

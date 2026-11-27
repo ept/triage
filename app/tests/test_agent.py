@@ -183,6 +183,32 @@ def handles_by_subject(events: list[AgentEvent]) -> dict[str, str]:
     return {c["subject"]: c["handle"] for c in cards}
 
 
+def test_flagging_and_marking_are_separate(setup: Setup) -> None:
+    setup.say("Show me everything", Call("search_mail", {"query": "", "limit": 5}), "Here.")
+    events = setup.say(
+        "Flag the first two",
+        [
+            Call("flag_messages", {"ids": ["m1", "m2"]}),
+            Call("flag_messages", {"ids": ["m1", "m3"], "flagged": True}),
+            Call("flag_messages", {"ids": ["m1"]}),
+            Call("mark_messages", {"ids": ["m1"]}),
+            Call("flag_messages", {"ids": ["m2"], "flagged": False}),
+        ],
+        "Done.",
+    )
+    tools = [e.data["tool"] for e in events if e.kind == "item" and e.data["tool"]]
+    assert [(t["summary"], t["ok"]) for t in tools] == [
+        ("Marked 2 messages as flagged", True),
+        ("Marked 1 message as flagged", True),  # the other one was flagged already
+        ("Nothing to do: already flagged", True),
+        ("mark_messages: say whether to mark the messages as read (true) or unread (false)", False),
+        ("Marked 1 message as not flagged", True),
+    ]
+    flagged = sorted(m.subject for m in setup.store.search("", limit=10) if m.flagged)
+    assert len(flagged) == 2
+    assert all(not m.seen for m in setup.store.search("", limit=10)), "nothing was marked read"
+
+
 def test_marking_and_moving(setup: Setup) -> None:
     found = setup.say("Show me everything", Call("search_mail", {"query": "", "limit": 5}), "Here.")
     handles = handles_by_subject(found)
@@ -389,6 +415,7 @@ def test_policy_is_applied_to_a_new_message(setup: Setup) -> None:
         "read_message",
         "list_folders",
         "move_messages",
+        "flag_messages",
         "mark_messages",
         "draft_reply",
     }
