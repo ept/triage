@@ -1,0 +1,40 @@
+;; macOS sandbox profile for the local LLM server (llama.cpp's `llama-server`).
+;;
+;; The local LLM sees email content, so it must not be able to send anything anywhere, write
+;; anywhere, or read the user's files. This profile starts from "everything allowed", because
+;; GPU inference through Metal needs a long and version-dependent list of system services, and
+;; then takes away what matters:
+;;
+;;   * no outgoing network connections (it may only accept connections on its own port);
+;;   * no writing to the file system, apart from temporary directories;
+;;   * no reading of anything under /Users apart from the model directory;
+;;   * no starting of other programs.
+;;
+;; Use it through `run-llm.sh`, which fills in the parameters.
+
+(version 1)
+(allow default)
+
+;; --- Network: accept connections on the loopback port, never connect out.
+(deny network-outbound)
+(allow network-outbound (literal "/private/var/run/mDNSResponder"))
+(deny network-bind)
+(allow network-bind (local ip (param "LISTEN")))
+(deny network-inbound)
+(allow network-inbound (local ip (param "LISTEN")))
+
+;; --- File system: read-only, and nothing of the user's except the models.
+(deny file-write*)
+(allow file-write*
+    (subpath "/private/tmp")
+    (subpath "/private/var/folders")
+    (literal "/dev/null")
+    (literal "/dev/dtracehelper"))
+(deny file-read* (subpath "/Users"))
+(allow file-read* (subpath (param "MODEL_DIR")))
+(allow file-read-metadata (subpath "/Users"))
+
+;; --- No other programs.
+(deny process-fork)
+(deny process-exec)
+(allow process-exec (literal (param "SERVER")))
