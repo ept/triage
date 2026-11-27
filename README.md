@@ -210,6 +210,7 @@ The wrapper app
 * Before a message goes to the coding agent, a window of the wrapper's own shows its exact text
   and asks. Closing that window, or quitting, means no.
 * Quitting (closing the main window, or Cmd-Q) stops and removes the containers.
+* Cmd-R loads the app's window afresh.
 
 It is part of the trusted base, so build it from the reviewed copy. It needs macOS 14 or later.
 
