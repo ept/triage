@@ -8,6 +8,11 @@ Cargo cannot enforce that on stable Rust, so this script asks crates.io when eac
 version was published. For every version that is too young it prints the newest older version
 that is old enough, which can be pinned with `cargo update -p NAME --precise VERSION`.
 It sends crate names and versions to crates.io and nothing else. Exit code 1 if any is too young.
+
+Do not pin blindly: a young release may be the fix for a published vulnerability, which the
+rule exempts. After pinning, run `cargo audit` (cargo install cargo-audit) on the lock file, and
+take the fixed release wherever going back would bring in an advisory. On 2026-11-27 that was
+the case for `url` 2.5.9 (with `form_urlencoded` 1.2.3, which it requires) and `cookie` 0.18.3.
 """
 
 import json
