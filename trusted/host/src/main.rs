@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 use triage_host::agent::{self, AgentEvent};
-use triage_host::control::Control;
+use triage_host::control::{self, Applied, Control};
 use triage_host::deploy::{self, Outcome};
 use triage_host::docker::{Cli as DockerCli, Docker};
 use triage_host::sandbox::{self, Grant};
@@ -146,11 +146,30 @@ fn load_accounts(store: &dyn SecretStore) -> Result<Vec<Value>, String> {
     Ok(value["accounts"].as_array().cloned().unwrap_or_default())
 }
 
+/// Stores the account list in the Keychain and, if the gateway is running, hands it over at
+/// once. A list that the running gateway rejects is not stored.
 fn save_accounts(store: &dyn SecretStore, accounts: &[Value]) -> Result<(), String> {
-    store.set(
-        secrets::ACCOUNTS,
-        &json!({"accounts": accounts}).to_string(),
-    )
+    let list = json!({"accounts": accounts});
+    let data = settings::data_dir()?;
+    let config: Option<HostConfig> = settings::read(&data.join("host.json"))?;
+    let session: Option<Session> = settings::read(&data.join("session.json"))?;
+    let applied = match &config {
+        Some(config) => control::apply_accounts(config, session.as_ref(), &list)
+            .map_err(|reason| format!("the gateway does not accept this: {reason}. Not saved."))?,
+        None => Applied::AtNextStart,
+    };
+    store.set(secrets::ACCOUNTS, &list.to_string())?;
+    match applied {
+        Applied::Now => println!(
+            "Saved, and handed to the running gateway: the app picks the change up by itself."
+        ),
+        Applied::AtNextStart => println!("Saved. It takes effect at the next `triage up`."),
+        Applied::NotNow(reason) => println!(
+            "Saved, but the running gateway could not be updated ({reason}). \
+             It takes effect at the next `triage up`."
+        ),
+    }
+    Ok(())
 }
 
 fn run(command: Command) -> Result<(), String> {
@@ -349,9 +368,7 @@ fn account(command: AccountCommand) -> Result<(), String> {
             }
             accounts.retain(|a| a["id"] != id.as_str());
             accounts.push(account);
-            save_accounts(store.as_ref(), &accounts)?;
-            println!("Saved. It takes effect at the next `triage up`, when the gateway checks it.");
-            Ok(())
+            save_accounts(store.as_ref(), &accounts)
         }
     }
 }
@@ -438,7 +455,9 @@ fn up(data: &Path, docker: &dyn Docker, rebuild: bool) -> Result<(), String> {
         &session.ui_token,
     );
     control.wait_until_ready(Duration::from_secs(30))?;
-    control.set_accounts(&json!({"accounts": accounts}))?;
+    control
+        .set_accounts(&json!({"accounts": accounts}))
+        .map_err(|error| error.to_string())?;
     println!("{} account(s) configured.", accounts.len());
     if config.llm_port.is_none() {
         println!(

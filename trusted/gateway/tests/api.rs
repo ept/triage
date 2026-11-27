@@ -98,19 +98,30 @@ impl TestGateway {
     }
 
     async fn configure_account(&self, server: &Dovecot, user: &str) {
-        let account = json!({
-            "id": user,
-            "address": format!("{user}@example.org"),
-            "display_name": "Robin Example",
-            "host": "127.0.0.1",
-            "port": server.port,
-            "security": "insecure",
-            "username": user,
-            "auth": {"type": "password", "password": common::PASSWORD},
-        });
+        self.configure_accounts(server, &[user]).await;
+    }
+
+    /// Replaces the account list, as the host tool does at start-up and whenever the user
+    /// adds or removes an account.
+    async fn configure_accounts(&self, server: &Dovecot, users: &[&str]) {
+        let accounts: Vec<Value> = users
+            .iter()
+            .map(|user| {
+                json!({
+                    "id": user,
+                    "address": format!("{user}@example.org"),
+                    "display_name": "Robin Example",
+                    "host": "127.0.0.1",
+                    "port": server.port,
+                    "security": "insecure",
+                    "username": user,
+                    "auth": {"type": "password", "password": common::PASSWORD},
+                })
+            })
+            .collect();
         let response = self
             .control(reqwest::Method::PUT, "/control/v1/accounts")
-            .json(&json!({"accounts": [account]}))
+            .json(&json!({"accounts": accounts}))
             .send()
             .await
             .unwrap();
@@ -356,6 +367,59 @@ async fn mailbox_operations_end_to_end() {
         let (status, _) = gateway.call(path, json!({})).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
     }
+}
+
+#[tokio::test]
+async fn accounts_can_be_added_and_removed_while_running() {
+    let server = Dovecot::start();
+    seed(&server, "robin", 2);
+    seed(&server, "sam", 3);
+    let gateway = TestGateway::start("http://127.0.0.1:1", 20).await;
+    let ids = async || -> Vec<String> {
+        gateway.get("/v1/accounts").await["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|account| account["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let inbox = async |account: &str| {
+        gateway
+            .call(
+                "/v1/folders/status",
+                json!({"account": account, "folder": "INBOX"}),
+            )
+            .await
+    };
+
+    gateway.configure_account(&server, "robin").await;
+    assert_eq!(ids().await, ["robin"]);
+    assert_eq!(inbox("robin").await.1["messages"], 2);
+    assert_eq!(inbox("sam").await.0, StatusCode::NOT_FOUND);
+
+    // A second account appears next to the first, which carries on undisturbed.
+    gateway.configure_accounts(&server, &["robin", "sam"]).await;
+    assert_eq!(ids().await, ["robin", "sam"]);
+    assert_eq!(inbox("sam").await.1["messages"], 3);
+    assert_eq!(inbox("robin").await.1["messages"], 2);
+
+    // Removing an account takes it out of reach at once.
+    gateway.configure_accounts(&server, &["sam"]).await;
+    assert_eq!(ids().await, ["sam"]);
+    let (status, body) = inbox("robin").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(error_code(&body), "not_found");
+    assert_eq!(inbox("sam").await.1["messages"], 3);
+
+    // The app is told about each change, so that it need not be restarted either.
+    let events = gateway.get("/v1/events").await;
+    let kinds: Vec<&str> = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["accounts_changed"; 3]);
 }
 
 #[tokio::test]
