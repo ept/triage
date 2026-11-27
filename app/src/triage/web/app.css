@@ -2,12 +2,12 @@
 
 :root {
   color-scheme: light dark;
-  --bg: #f6f5f2;
+  --bg: #f4f4f4;
   --surface: #ffffff;
-  --surface-2: #efede8;
+  --surface-2: #ebebeb;
   --text: #1f2328;
   --muted: #646b73;
-  --border: #d9d6cf;
+  --border: #d4d4d4;
   --accent: #2f6f6a;
   --accent-text: #ffffff;
   --user: #e3efee;
