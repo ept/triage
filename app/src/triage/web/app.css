@@ -185,6 +185,7 @@ textarea {
 .item-user.unconfirmed .bubble { border-color: var(--danger); }
 .item.streaming .bubble { border-style: dashed; }
 .item-time { color: var(--muted); font-size: 0.72rem; margin-top: 0.15rem; }
+.item-progress { color: var(--muted); font-size: 0.85rem; font-style: italic; }
 
 .markdown > :last-child { margin-bottom: 0; }
 .markdown ul, .markdown ol { margin: 0 0 0.6em; padding-left: 1.4em; }

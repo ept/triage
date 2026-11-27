@@ -135,6 +135,8 @@ export const api = {
     }
   },
 
+  stopAssistant: () => json("POST", "api/assistant/stop", {}),
+
   message: (key) => json("GET", `api/messages/${segment(key)}`),
   async messageHtml(key) {
     const response = await send("GET", `api/messages/${segment(key)}/html`);

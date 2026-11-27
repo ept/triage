@@ -105,7 +105,7 @@ def test_sending_a_message_streams_the_reply(ui: Session) -> None:
     # While the reply is being written it is shown as it arrives ...
     streaming = page.locator(".item.streaming")
     expect(streaming).to_be_visible()
-    expect(page.locator("#composer-send")).to_be_disabled()
+    expect(page.locator("#composer-send")).to_have_text("Stop")
     expect(streaming).to_contain_text("You have")
     # ... and is then replaced by the finished item.
     final = page.locator(".item-assistant:not(.streaming) .markdown")
@@ -115,6 +115,7 @@ def test_sending_a_message_streams_the_reply(ui: Session) -> None:
     expect(page.locator(".item-user.pending")).to_have_count(0)
     expect(page.locator(".tool-line")).to_contain_text("Searched mail")
     expect(page.locator("#composer-send")).to_be_enabled()
+    expect(page.locator("#composer-send")).to_have_text("Send")
     expect(box).to_have_value("")
 
     # A conversation was created for the first message, and has its own address now.
@@ -156,7 +157,7 @@ def test_errors_during_a_reply_are_shown(ui: Session) -> None:
     box.fill("please fail")
     box.press("Enter")
     expect(page.locator(".item-error")).to_have_text("The local model is not available.")
-    expect(page.locator("#composer-send")).to_be_enabled()
+    expect(page.locator("#composer-send")).to_have_text("Send")
 
     # A request that fails outright is reported in the conversation too.
     ui.backend.fail_next("POST", "/api/conversations/1/messages", 503, "unavailable", "Try later.")
@@ -164,6 +165,32 @@ def test_errors_during_a_reply_are_shown(ui: Session) -> None:
     box.press("Enter")
     expect(page.locator(".item-error").last).to_have_text("Try later.")
     expect(page.locator(".item-user.unconfirmed")).to_have_count(1)
+
+
+def test_a_long_job_reports_progress_and_can_be_stopped(ui: Session) -> None:
+    page = ui.open()
+    box = page.locator("#composer-text")
+    box.fill("Flag every message from students")
+    box.press("Enter")
+
+    # One line says how far the job has got, and is replaced as it goes on.
+    progress = page.locator(".item-progress")
+    expect(progress).to_contain_text("of 40")
+    expect(progress).to_have_count(1)
+    # What was done to a message stays in the conversation.
+    expect(page.locator(".tool-line").first).to_contain_text("Message 10: flagged")
+
+    # The button that sends a message stops the assistant while it is working.
+    button = page.locator("#composer-send")
+    expect(button).to_have_text("Stop")
+    button.click()
+    expect(page.locator(".item-assistant").last).to_contain_text("Stopped, as you asked.")
+    assert ("POST", "/api/assistant/stop") in [(m, p) for m, p, _ in ui.backend.requests]
+    expect(progress).to_have_count(0)
+    expect(button).to_have_text("Send")
+    expect(button).to_be_enabled()
+    expect(page.locator(".item-assistant")).not_to_contain_text("All 40 messages are done.")
+    ui.assert_clean()
 
 
 def test_message_viewer(ui: Session) -> None:

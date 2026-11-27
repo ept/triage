@@ -81,6 +81,7 @@ class StubBackend:
     hostile: bool = False
     #: Seconds between the events of a streamed chat reply.
     stream_delay: float = 0.12
+    stop_requested: bool = False
     requests: list[tuple[str, str, Any]] = field(default_factory=list)
     failures: dict[tuple[str, str], Failure] = field(default_factory=dict)
 
@@ -342,6 +343,26 @@ class StubBackend:
         if "fail" in text:
             events.append(("error", {"message": self.t("The local model is not available.")}))
             return events
+        if "every" in text:
+            # A long job: reports on its progress, and can be stopped.
+            for index in range(1, 41):
+                events.append(("progress", {"text": self.t(f"Message {index} of 40")}))
+                if index % 10 == 0:
+                    done = self._item(
+                        "tool",
+                        "",
+                        tool={
+                            "name": "process_messages",
+                            "summary": self.t(f"Message {index}: flagged"),
+                            "ok": True,
+                        },
+                        messages=[self.cards["m1"]],
+                    )
+                    conversation["items"].append(done)
+                    events.append(("item", done))
+            final = self._item("assistant", self.t("All 40 messages are done."))
+            conversation["items"].append(final)
+            return [*events, ("item", final), ("done", {})]
         tool = self._item(
             "tool",
             "",
@@ -409,7 +430,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "close")
         self.end_headers()
+        self.backend.stop_requested = False
         for name, data in events:
+            if self.backend.stop_requested:
+                stopped = self.backend._item("assistant", self.backend.t("Stopped, as you asked."))
+                for last in (("item", stopped), ("done", {})):
+                    self.wfile.write(f"event: {last[0]}\ndata: {json.dumps(last[1])}\n\n".encode())
+                self.wfile.flush()
+                break
             self.wfile.write(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode())
             self.wfile.flush()
             time.sleep(self.backend.stream_delay)
@@ -482,6 +510,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"id": new_id, "title": b.t("New conversation"), "updated": TIME})
             case ("GET", ["api", "conversations", cid]):
                 self._json(b.conversations[int(cid)])
+            case ("POST", ["api", "assistant", "stop"]):
+                b.stop_requested = True
+                self._json({})
             case ("POST", ["api", "conversations", cid, "messages"]):
                 self._stream(b.reply_events(b.conversations[int(cid)], str(body["text"])))
             case ("GET", ["api", "messages", key]):

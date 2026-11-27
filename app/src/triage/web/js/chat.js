@@ -137,9 +137,24 @@ export async function showConversation(id) {
 
 function setBusy(value) {
   busy = value;
-  byId("composer-send").disabled = value;
-  byId("composer-send").textContent = value ? "Working…" : "Send";
+  // While the assistant works, the button stops it instead.
+  const button = byId("composer-send");
+  button.disabled = false;
+  button.textContent = value ? "Stop" : "Send";
+  button.classList.toggle("stop", value);
   items().setAttribute("aria-busy", String(value));
+}
+
+async function stop() {
+  const button = byId("composer-send");
+  button.disabled = true;
+  button.textContent = "Stopping…";
+  try {
+    await api.stopAssistant();
+  } catch (error) {
+    if (busy) setBusy(true);
+    showError(error);
+  }
 }
 
 async function submit(text) {
@@ -160,6 +175,12 @@ async function submit(text) {
     streaming = null;
     streamed = "";
   };
+  // One line that says how far a long job has got; each report replaces the last.
+  let progress = null;
+  const endProgress = () => {
+    progress?.remove();
+    progress = null;
+  };
 
   try {
     if (conversationId === null) {
@@ -172,7 +193,16 @@ async function submit(text) {
       if (event === "item") {
         if (data.role === "user") pending.remove();
         if (data.role === "assistant") endStream();
+        endProgress();
         appendItem(data);
+      } else if (event === "progress") {
+        const stick = nearBottom();
+        if (!progress) {
+          progress = el("div", { class: "item item-progress", role: "status" });
+          items().append(progress);
+        }
+        progress.textContent = typeof data.text === "string" ? data.text : "";
+        if (stick) scrollToBottom();
       } else if (event === "delta") {
         const stick = nearBottom();
         if (!streaming) {
@@ -192,6 +222,7 @@ async function submit(text) {
     if (error.name !== "AbortError") appendError(error.message);
   } finally {
     endStream();
+    endProgress();
     // If the message was never confirmed, keep it visible but marked.
     if (pending.isConnected) pending.classList.add("unconfirmed");
     setBusy(false);
@@ -231,6 +262,11 @@ export function initChat() {
     if (!text || busy) return;
     input.value = "";
     submit(text);
+  });
+  byId("composer-send").addEventListener("click", (event) => {
+    if (!busy) return;
+    event.preventDefault();
+    stop();
   });
   input.addEventListener("keydown", (event) => {
     // Enter sends; Shift+Enter makes a new line. Not while composing with an input method.
