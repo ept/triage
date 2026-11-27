@@ -284,12 +284,11 @@ impl Windows {
         let app = SocketAddr::from((Ipv4Addr::LOCALHOST, ui_port));
         let proxy = Proxy::start(app).map_err(|error| format!("no proxy: {error}"))?;
         let proxy_port = proxy.port();
+        // What is stopped is not reported anywhere: the page that tried is the app's, and has
+        // no say here. `--self-test` shows that stopping works.
+        let builder = view::restrict(WebViewBuilder::new(), app, proxy_port, |_what, _url| {})?;
         // The window starts empty. The app is loaded when `Confined` arrives.
-        let pane = open(target, NAME, (1180.0, 800.0), move |_window| {
-            // What is stopped is not reported anywhere: the page that tried is the app's,
-            // and has no say here. `--self-test` shows that stopping works.
-            view::restrict(WebViewBuilder::new(), app, proxy_port, |_what, _url| {})
-        })?;
+        let pane = open(target, NAME, (1180.0, 800.0), move |_window| builder)?;
         pane.window.set_focus();
         let wake = self.wake.clone();
         view::block_other_addresses(&pane.webview, app, move |result| {

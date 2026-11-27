@@ -103,13 +103,99 @@
       a.src = url;
       a.load();
     },
+    video(id, url) {
+      const v = el('video', { src: url, preload: 'auto' });
+      v.onerror = () => note(id, 'onerror');
+      document.body.appendChild(v);
+      v.load();
+    },
+    poster(id, url) {
+      document.body.appendChild(el('video', { poster: url, width: 10, height: 10 }));
+    },
+    srcset(id, url) {
+      const i = el('img', { srcset: url + ' 2x' });
+      i.onload = () => note(id, 'onload');
+      i.onerror = () => note(id, 'onerror');
+      document.body.appendChild(i);
+    },
+    svg(id, url) {
+      const d = el('div');
+      d.innerHTML = '<svg width="10" height="10"><image href="' + url + '" width="10" height="10"/></svg>';
+      document.body.appendChild(d);
+    },
+    object(id, url) {
+      document.body.appendChild(el('object', { data: url, width: 10, height: 10 }));
+    },
+    embed(id, url) {
+      document.body.appendChild(el('embed', { src: url, width: 10, height: 10 }));
+    },
+    cssimport(id, url) {
+      document.head.appendChild(el('style', { textContent: '@import url("' + url + '");' }));
+    },
+    cssbg(id, url) {
+      document.body.appendChild(el('div', {
+        style: 'width:10px;height:10px;background-image:url("' + url + '")',
+      }));
+    },
+    font(id, url) {
+      new FontFace('f' + id.replace(/-/g, ''), 'url("' + url + '")').load().then(
+        () => note(id, 'loaded'), (e) => note(id, 'rejected: ' + e));
+    },
+    import(id, url) {
+      import(url).then(() => note(id, 'resolved'), (e) => note(id, 'rejected: ' + e));
+    },
+    worker(id, url) {
+      // A same-origin worker that fetches the address: requests made off the page's thread.
+      const w = new Worker('/worker.js?to=' + encodeURIComponent(url));
+      w.onmessage = (e) => note(id, 'worker: ' + e.data);
+      w.onerror = () => note(id, 'worker onerror');
+    },
+    // The hints with which a page asks for connections or loads ahead of time.
+    preconnect(id, url) {
+      document.head.appendChild(el('link', { rel: 'preconnect', href: url }));
+    },
+    prefetch(id, url) {
+      document.head.appendChild(el('link', { rel: 'prefetch', href: url }));
+    },
+    preload(id, url) {
+      document.head.appendChild(el('link', { rel: 'preload', as: 'fetch', href: url }));
+    },
+    aping(id, url) {
+      // A link within the page that asks for a notification to be sent elsewhere when clicked.
+      const a = el('a', { href: '#' + id, textContent: id });
+      a.setAttribute('ping', url);
+      document.body.appendChild(a);
+      a.click();
+    },
+    webtransport(id, url) {
+      // Runs over UDP, which no HTTP proxy carries.
+      if (typeof WebTransport === 'undefined') return note(id, 'not available');
+      const t = new WebTransport(url.replace(/^http:/, 'https:'));
+      t.ready.then(() => note(id, 'ready'), (e) => note(id, 'rejected: ' + e));
+    },
   };
+  // Tried last, because each replaces the page if it is not stopped.
+  const leaving = {
+    // An ordinary link, clicked. (WebKit opens a connection to its address straight away.)
+    aself(id, url) {
+      const a = el('a', { href: url, textContent: id });
+      document.body.appendChild(a);
+      a.click();
+    },
+    toplevel(id, url) {
+      location.href = url;
+    },
+  };
+  // Tells the app's server which attempt comes next, so that a connection over which nothing
+  // is sent can still be put down to the attempt that opened it.
+  const mark = (id) => fetch('/mark/' + id).catch(() => {});
 
   const frameInfo = (w) => {
     try {
       return {
         RTCPeerConnection: typeof w.RTCPeerConnection,
         webkitRTCPeerConnection: typeof w.webkitRTCPeerConnection,
+        WebTransport: typeof w.WebTransport,
       };
     } catch (e) {
       return 'threw: ' + e;
@@ -121,6 +207,7 @@
     for (const ch of Object.keys(attempts)) {
       for (const host of ['ip', 'name', 'ext']) {
         const id = ch + '-' + host;
+        await mark(id);
         try {
           attempts[ch](id, target(id, host), host);
         } catch (e) {
@@ -130,7 +217,8 @@
       }
     }
 
-    // Whether the interface for direct connections is gone, per kind of frame.
+    await mark('end');
+    // Whether the interfaces that bypass proxies are gone, per kind of frame.
     const frames = { main: frameInfo(window) };
     const blank = el('iframe');
     document.body.appendChild(blank);
@@ -163,11 +251,16 @@
     document.getElementById('status').textContent = 'reporting';
     await fetch('/report', { method: 'POST', body: JSON.stringify(report) });
 
-    // Last: top-level navigation. If the first is stopped, the page lives on and tries the second.
-    for (const host of ['ext', 'name', 'ip']) {
-      location.href = target('toplevel-' + host, host);
-      await sleep(800);
+    // Last: leaving the page. If one attempt is stopped, the page lives on and tries the next.
+    for (const ch of Object.keys(leaving)) {
+      for (const host of ['name', 'ip', 'ext']) {
+        const id = ch + '-' + host;
+        await mark(id);
+        leaving[ch](id, target(id, host));
+        await sleep(800);
+      }
     }
+    await mark('end');
     fetch('/finished', { method: 'POST', body: '' });
   }
 

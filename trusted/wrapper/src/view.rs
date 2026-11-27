@@ -8,10 +8,13 @@
 //! * on macOS, where the web view does not use a proxy for addresses on the same machine, a
 //!   content rule list makes WebKit itself refuse to load anything but the app's addresses
 //!   ([`block_other_addresses`]), and the app is only loaded once that list is in place;
+//! * on macOS, WebKit is also told not to open connections ahead of time, which it otherwise
+//!   does when a link is clicked, before anything here is asked ([`data_store`]);
+//! * it keeps nothing on disk on macOS: no cache, no cookies;
 //! * it may navigate (as a whole, or in a frame) only within the app's origin;
 //! * it cannot open windows, start downloads, or use the camera, microphone or location;
-//! * the interface for direct connections between browsers (WebRTC), which does not go
-//!   through proxies, is removed from every frame before any page script runs;
+//! * the interfaces that do not go through proxies (WebRTC for direct connections between
+//!   browsers, WebTransport over UDP) are removed from every frame before any page script runs;
 //! * there is no channel from its pages to this program.
 
 use std::net::SocketAddr;
@@ -124,13 +127,15 @@ pub fn block_other_addresses(
     ready(Ok(()));
 }
 
-/// Runs in every frame before any script of the page. Proxies do not apply to WebRTC, so its
-/// entry points are taken away. (The properties are also made unwritable; a page can still
-/// not get them back, since they are gone from the frame it runs in and from every new one.)
+/// Runs in every frame before any script of the page. Proxies do not apply to WebRTC, nor to
+/// WebTransport (which runs over UDP), so their entry points are taken away. (The properties
+/// are also made unwritable; a page can still not get them back, since they are gone from the
+/// frame it runs in and from every new one.)
 const REMOVE_DIRECT_CONNECTIONS: &str = r#"
 (() => {
   for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel",
-                      "RTCIceTransport", "RTCSessionDescription", "RTCIceCandidate"]) {
+                      "RTCIceTransport", "RTCSessionDescription", "RTCIceCandidate",
+                      "WebTransport"]) {
     try {
       Object.defineProperty(window, name, { value: undefined, writable: false, configurable: false });
     } catch (error) {
@@ -143,15 +148,22 @@ const REMOVE_DIRECT_CONNECTIONS: &str = r#"
 /// Applies every restriction to a web view that is going to show the app at `app`, with the
 /// proxy that listens on `proxy_port` as its only way out. `stopped` is told what was stopped
 /// here and the address concerned.
+///
+/// Fails if a restriction cannot be applied on this system; the app must then not be shown.
 pub fn restrict<'a>(
     builder: WebViewBuilder<'a>,
     app: SocketAddr,
     proxy_port: u16,
     stopped: impl Fn(Stopped, &str) + Clone + Send + Sync + 'static,
-) -> WebViewBuilder<'a> {
+) -> Result<WebViewBuilder<'a>, String> {
     let (on_navigation, on_window, on_download, on_permission) =
         (stopped.clone(), stopped.clone(), stopped.clone(), stopped);
-    builder
+    #[cfg(target_os = "macos")]
+    let builder = {
+        use wry::WebViewBuilderExtMacos;
+        builder.with_webview_configuration(data_store()?)
+    };
+    let builder = builder
         .with_proxy_config(ProxyConfig::Http(ProxyEndpoint {
             host: "127.0.0.1".into(),
             port: proxy_port.to_string(),
@@ -177,7 +189,83 @@ pub fn restrict<'a>(
         })
         // `false`: not only in the main frame, but in every frame.
         .with_initialization_script_for_main_only(REMOVE_DIRECT_CONNECTIONS, false)
-        .with_devtools(false)
+        .with_devtools(false);
+    Ok(builder)
+}
+
+/// A configuration for the web view whose network session opens no connections ahead of time
+/// and keeps nothing on disk.
+///
+/// WebKit "preconnects": when a link is clicked, it opens a connection to the link's address
+/// at once, before the navigation handler is asked and without consulting the content rules.
+/// To an address on the same machine, that connection also bypasses the proxy. Nothing is
+/// sent over it, but a page could reach every local port that way, so it is switched off.
+///
+/// The switch (`allowsServerPreconnect`) is only reachable through WebKit interfaces that
+/// Apple has not published, although they have been there since macOS 10.15.4. If any of
+/// them is missing, this fails rather than leave the web view less confined than it claims;
+/// and `--self-test` checks the effect, not the setting.
+#[cfg(target_os = "macos")]
+fn data_store() -> Result<objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>, String> {
+    use objc2::rc::{Allocated, Retained};
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2::{ClassType, MainThreadMarker, MainThreadOnly, msg_send, sel};
+    use objc2_web_kit::{WKWebViewConfiguration, WKWebsiteDataStore};
+
+    let missing = |what: &str| {
+        format!(
+            "this version of WebKit has no {what}, which is needed to keep the web view from opening connections ahead of time"
+        )
+    };
+    let main_thread =
+        MainThreadMarker::new().ok_or_else(|| "not called on the window thread".to_string())?;
+    let settings_class = AnyClass::get(c"_WKWebsiteDataStoreConfiguration")
+        .ok_or_else(|| missing("_WKWebsiteDataStoreConfiguration"))?;
+    for (selector, name) in [
+        (
+            sel!(initNonPersistentConfiguration),
+            "initNonPersistentConfiguration",
+        ),
+        (
+            sel!(setAllowsServerPreconnect:),
+            "setAllowsServerPreconnect:",
+        ),
+        (sel!(allowsServerPreconnect), "allowsServerPreconnect"),
+    ] {
+        if !settings_class.responds_to(selector) {
+            return Err(missing(name));
+        }
+    }
+    if !WKWebsiteDataStore::class().responds_to(sel!(_initWithConfiguration:)) {
+        return Err(missing("_initWithConfiguration:"));
+    }
+
+    // SAFETY: the class exists and its instances respond to the three selectors, whose
+    // signatures are `- (instancetype)initNonPersistentConfiguration`,
+    // `- (void)setAllowsServerPreconnect:(BOOL)` and `- (BOOL)allowsServerPreconnect`.
+    let settings: Retained<AnyObject> = unsafe {
+        let allocated: Allocated<AnyObject> = msg_send![settings_class, alloc];
+        let settings: Option<Retained<AnyObject>> =
+            msg_send![allocated, initNonPersistentConfiguration];
+        let settings = settings.ok_or("WebKit did not create settings for a data store")?;
+        let () = msg_send![&*settings, setAllowsServerPreconnect: false];
+        let still_allowed: bool = msg_send![&*settings, allowsServerPreconnect];
+        if still_allowed {
+            return Err("WebKit did not accept the setting against early connections".into());
+        }
+        settings
+    };
+    // SAFETY: `- (instancetype)_initWithConfiguration:(_WKWebsiteDataStoreConfiguration *)`,
+    // which the class responds to, called on the main thread with an object of that class.
+    let store: Option<Retained<WKWebsiteDataStore>> = unsafe {
+        msg_send![WKWebsiteDataStore::alloc(main_thread), _initWithConfiguration: &*settings]
+    };
+    let store = store.ok_or("WebKit did not create a data store")?;
+    // SAFETY: called on the main thread, as the marker shows.
+    let configuration = unsafe { WKWebViewConfiguration::new(main_thread) };
+    // SAFETY: both objects are valid, and this is the main thread.
+    unsafe { configuration.setWebsiteDataStore(&store) };
+    Ok(configuration)
 }
 
 /// The settings for one of the wrapper's own pages (see [`crate::pages`]): no scripts, no
