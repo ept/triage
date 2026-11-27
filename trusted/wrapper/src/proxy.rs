@@ -11,9 +11,15 @@
 //!
 //! Each connection carries one request (`Connection: close` is forced), so that every request
 //! is checked. Bytes are copied as they arrive, which keeps streamed responses streaming.
+//!
+//! Some web views (WKWebView on macOS) do not send plain requests to a proxy but ask it for a
+//! tunnel (`CONNECT host:port`) and speak to the destination through that. A tunnel is opened
+//! to the app's address and to nothing else; whatever is sent through it can only reach the
+//! app.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -28,6 +34,7 @@ const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct Proxy {
     port: u16,
     refused: Arc<Mutex<Vec<String>>>,
+    passed_on: Arc<AtomicUsize>,
 }
 
 impl Proxy {
@@ -37,19 +44,24 @@ impl Proxy {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let port = listener.local_addr()?.port();
         let refused: Arc<Mutex<Vec<String>>> = Arc::default();
-        let log = refused.clone();
+        let passed_on: Arc<AtomicUsize> = Arc::default();
+        let (log, count) = (refused.clone(), passed_on.clone());
         std::thread::Builder::new()
             .name("proxy".into())
             .spawn(move || {
                 for client in listener.incoming().flatten() {
-                    let log = log.clone();
+                    let (log, count) = (log.clone(), count.clone());
                     std::thread::spawn(move || {
                         // A failure concerns one request of one page; there is nobody to tell.
-                        serve(client, app, &log).ok();
+                        serve(client, app, &log, &count).ok();
                     });
                 }
             })?;
-        Ok(Proxy { port, refused })
+        Ok(Proxy {
+            port,
+            refused,
+            passed_on,
+        })
     }
 
     /// The address to give to the web view as its proxy.
@@ -59,6 +71,11 @@ impl Proxy {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// How many requests and tunnels were passed on to the app so far.
+    pub fn passed_on(&self) -> usize {
+        self.passed_on.load(Ordering::SeqCst)
     }
 
     /// The destinations that were refused so far, oldest first (method and target as the web
@@ -73,6 +90,8 @@ impl Proxy {
 enum Target {
     /// A request for the app. The path (with query) is what is passed on.
     App { method: String, path: String },
+    /// A tunnel to the app.
+    Tunnel,
     /// Anything else.
     Refused,
 }
@@ -87,12 +106,18 @@ fn classify(request_line: &str, app: SocketAddr) -> Target {
     else {
         return Target::Refused;
     };
-    let method_ok = !method.is_empty()
-        && method.len() <= 16
-        && method.bytes().all(|b| b.is_ascii_uppercase())
-        && method != "CONNECT";
+    let method_ok =
+        !method.is_empty() && method.len() <= 16 && method.bytes().all(|b| b.is_ascii_uppercase());
     if !method_ok || !matches!(version, "HTTP/1.1" | "HTTP/1.0") {
         return Target::Refused;
+    }
+    if method == "CONNECT" {
+        // A tunnel names its destination as host:port, without a scheme.
+        return if target == app.to_string() {
+            Target::Tunnel
+        } else {
+            Target::Refused
+        };
     }
     let Some(rest) = target.strip_prefix("http://") else {
         return Target::Refused;
@@ -148,7 +173,12 @@ fn refuse(mut client: &TcpStream, log: &Mutex<Vec<String>>, what: &str) -> io::R
     client.shutdown(Shutdown::Write)
 }
 
-fn serve(client: TcpStream, app: SocketAddr, log: &Mutex<Vec<String>>) -> io::Result<()> {
+fn serve(
+    client: TcpStream,
+    app: SocketAddr,
+    log: &Mutex<Vec<String>>,
+    passed_on: &AtomicUsize,
+) -> io::Result<()> {
     client.set_read_timeout(Some(HEAD_TIMEOUT))?;
     let mut reader = BufReader::new(client.try_clone()?);
 
@@ -175,18 +205,25 @@ fn serve(client: TcpStream, app: SocketAddr, log: &Mutex<Vec<String>>) -> io::Re
         head.push(line.to_string());
     }
 
-    let Target::App { method, path } = classify(&head[0], app) else {
-        return refuse(&client, log, &head[0]);
-    };
-    let mut request = format!("{method} {path} HTTP/1.1\r\n");
-    for field in &head[1..] {
-        let name = field.split(':').next().unwrap_or("");
-        if !is_hop_header(name) {
-            request.push_str(field);
-            request.push_str("\r\n");
+    // What is sent to the app first: the request with the app as its direct destination, or
+    // nothing for a tunnel. And what is sent to the web view first: for a tunnel, the news
+    // that it is open.
+    let (request, greeting) = match classify(&head[0], app) {
+        Target::Refused => return refuse(&client, log, &head[0]),
+        Target::Tunnel => (String::new(), "HTTP/1.1 200 Connection established\r\n\r\n"),
+        Target::App { method, path } => {
+            let mut request = format!("{method} {path} HTTP/1.1\r\n");
+            for field in &head[1..] {
+                let name = field.split(':').next().unwrap_or("");
+                if !is_hop_header(name) {
+                    request.push_str(field);
+                    request.push_str("\r\n");
+                }
+            }
+            request.push_str("Connection: close\r\n\r\n");
+            (request, "")
         }
-    }
-    request.push_str("Connection: close\r\n\r\n");
+    };
 
     let mut upstream = match TcpStream::connect_timeout(&app, CONNECT_TIMEOUT) {
         Ok(upstream) => upstream,
@@ -199,7 +236,9 @@ fn serve(client: TcpStream, app: SocketAddr, log: &Mutex<Vec<String>>) -> io::Re
             return Ok(());
         }
     };
+    passed_on.fetch_add(1, Ordering::SeqCst);
     upstream.write_all(request.as_bytes())?;
+    (&client).write_all(greeting.as_bytes())?;
     client.set_read_timeout(None)?;
 
     // The rest of the request (its body) goes up, the response comes down, both as they
@@ -248,6 +287,29 @@ mod tests {
     }
 
     #[test]
+    fn a_tunnel_is_opened_to_the_app_only() {
+        let line = "CONNECT 127.0.0.1:8102 HTTP/1.1";
+        assert_eq!(classify(line, app()), Target::Tunnel);
+
+        let app = echo_server();
+        let proxy = Proxy::start(app).unwrap();
+        let mut stream = TcpStream::connect(("127.0.0.1", proxy.port())).unwrap();
+        write!(stream, "CONNECT {app} HTTP/1.1\r\nHost: {app}\r\n\r\n").unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(line, "HTTP/1.1 200 Connection established\r\n");
+        reader.read_line(&mut line).unwrap();
+        // Through the tunnel, the web view speaks to the app as if directly.
+        write!(stream, "GET /through HTTP/1.1\r\nHost: {app}\r\n\r\n").unwrap();
+        let mut answer = String::new();
+        reader.read_to_string(&mut answer).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer}");
+        assert!(answer.contains("GET /through HTTP/1.1"));
+        assert_eq!(proxy.passed_on(), 1);
+    }
+
+    #[test]
     fn everything_else_is_refused() {
         for line in [
             "GET http://example.org/ HTTP/1.1",
@@ -268,7 +330,9 @@ mod tests {
             "GET ws://127.0.0.1:8102/ HTTP/1.1",
             "GET / HTTP/1.1",
             "GET //evil.example/ HTTP/1.1",
-            "CONNECT 127.0.0.1:8102 HTTP/1.1",
+            "CONNECT 127.0.0.1:8103 HTTP/1.1",
+            "CONNECT localhost:8102 HTTP/1.1",
+            "CONNECT 127.0.0.1:8102/ HTTP/1.1",
             "CONNECT evil.example:443 HTTP/1.1",
             "CONNECT http://127.0.0.1:8102/ HTTP/1.1",
             "get http://127.0.0.1:8102/ HTTP/1.1",

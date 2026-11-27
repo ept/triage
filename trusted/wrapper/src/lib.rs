@@ -3,3 +3,4 @@
 pub mod bridge;
 pub mod pages;
 pub mod proxy;
+pub mod view;

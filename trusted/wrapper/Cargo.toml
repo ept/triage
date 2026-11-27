@@ -15,6 +15,21 @@ rust-version = "1.90"
 [workspace]
 
 [dependencies]
+serde_json = "1"
 triage-host = { path = "../host" }
+# The web view and window libraries that Tauri is built on, without the framework: no bridge
+# between pages and native code, and a third of the dependencies. Versions are exact, and
+# were at least seven days old when chosen; see README.md on updating them.
+# `mac-proxy` makes the web view on macOS (14 or later) use the proxy it is given.
+tao = "=0.37.3"
+wry = { version = "=0.57.3", features = ["mac-proxy"] }
+
+# The menu bar, without which copy and paste do not work in a window on macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = "=0.21.2"
 
 [dev-dependencies]
+
+[[bin]]
+name = "email-triage"
+path = "src/main.rs"
