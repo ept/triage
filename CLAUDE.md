@@ -68,6 +68,10 @@ cargo build -p triage-gateway                              # used by the app's e
 cd app && TRIAGE_GATEWAY_BIN=../trusted/target/debug/triage-gateway uv run pytest
 cd app && uv run ruff check && uv run ruff format --check && uv run mypy
 
+# You cannot reach the user's local model from this sandbox. When you change how the assistant
+# talks to the model (prompts, tools, limits), keep `triage.testing.evaluate` working: it is how
+# the user checks such a change against their real model, on made-up mail.
+
 # Try the interface with made-up mail and a pretend model
 cd app && uv run python -m triage.testing.demo --port 8765
 ```
@@ -78,12 +82,12 @@ cd app && uv run python -m triage.testing.demo --port 8765
 |----------------------------|--------------|
 | `gateway.py`, `llm.py`     | Clients for the gateway's sandbox API and for the local model behind its relay |
 | `sync.py`, `store.py`, `mime.py` | Local copy of the mail: sync, SQLite cache with full-text search, parsing and HTML sanitising |
-| `agent.py`                 | The assistant and its tools; also applies the policy to new mail |
+| `agent.py`                 | The assistant and its tools; also applies the policy to new mail. Requests about many messages go through `process_messages`, which puts each message before the model on its own |
 | `analysis.py`              | Background analysis of each new message |
 | `policy.py`, `settings.py`, `chats.py`, `activity.py` | Policy (Git-versioned), settings, conversations, operation log and undo |
 | `server.py`                | HTTP API, static files, background threads |
 | `web/`                     | The web interface: plain ES modules and CSS, no build step |
-| `testing/`                 | In-memory fake gateway, scripted stand-in for the model, demo launcher |
+| `testing/`                 | In-memory fake gateway, scripted stand-in for the model, demo launcher, and `evaluate.py`, which tries the assistant with a real model on made-up mail |
 
 The API between `server.py` and `web/` has no separate description: `server.py` is the reference,
 and `tests/ui/stub_server.py` mirrors it for the interface tests. Change both together.

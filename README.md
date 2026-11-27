@@ -48,7 +48,7 @@ This is an early version. What exists, and how far it has been tested:
 |------------------------------|------------------------------------------------------------------------|
 | Gateway                      | Implemented; tested against a real IMAP server (Dovecot)               |
 | App: sync, parsing, search   | Implemented; tested against the real gateway and Dovecot               |
-| App: assistant, policy, analysis, web interface | Implemented; tested with a scripted stand-in for the model, and in a browser through the real gateway's relay. **Not yet tried with a real local model** |
+| App: assistant, policy, analysis, web interface | Implemented; tested with a scripted stand-in for the model, and in a browser through the real gateway's relay. With a real model it has only been tried on made-up mail, with a small model (see "Trying a model" below) |
 | Host tool `triage`           | Implemented; its logic is unit-tested and it builds on macOS, but `triage up` has **not yet been run against Docker** |
 | Container images             | **Not yet built with Docker.** The build steps of all three Dockerfiles have been replayed inside the real base images without Docker (except the Rust installation in the coding sandbox image), and the resulting gateway and app start and talk to each other |
 | LLM sandbox profile          | Written, **not yet tested on macOS**                                   |
@@ -184,6 +184,24 @@ before the restart is no longer connected, and has to be closed or pointed at th
 
 Your data lives in `~/.triage`: `cache/` (local copy of your mail and its index), `config/`
 (settings and your policy), `gateway/` (the log of every change made to your mailboxes).
+
+Trying a model
+--------------
+
+How well the assistant works depends on the model, and the tests cannot tell you: they use a
+scripted stand-in. To see what your model does, run the assistant's evaluation against the
+running model server. It uses made-up mail in an in-memory mailbox and touches nothing of yours,
+so its output is safe to share when asking for help:
+
+```sh
+cd ~/src/triage-trusted/app             # the reviewed copy; needs uv (brew install uv)
+TRIAGE_LLM_API_KEY=$(security find-generic-password -s email-triage -a llm-api-key -w) \
+    uv run python -m triage.testing.evaluate --url http://127.0.0.1:8012
+```
+
+It gives the assistant a few tasks (answer a question, move one message, deal with every
+request of a kind in a full inbox, analyse new messages), prints what the assistant did, and
+checks the mailbox afterwards. Name one or more scenarios after the command to run only those.
 
 Development
 -----------
