@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -318,6 +318,51 @@ def test_notifications_from_the_gateway(setup: Setup) -> None:
     notices = setup.http.get("/api/status").json()["notices"]
     assert len(notices) == 1
     assert "23 messages were moved to the trash" in notices[0]["text"]
+
+
+def test_account_changes_reach_the_running_app(tmp_path: Path, fake: FakeGateway) -> None:
+    """Adding or removing an account needs no restart: the gateway announces the change."""
+    env = Setup(tmp_path, fake)
+    env.deliver(sender=ALEX, subject="Invoice 1042", text="Please pay invoice 1042.\n")
+
+    def wait_for(condition: Callable[[], bool], what: str) -> None:
+        pause = threading.Event()
+        for _ in range(100):
+            if condition():
+                return
+            pause.wait(0.1)
+        pytest.fail(what)
+
+    def status_accounts() -> list[str]:
+        return [a["id"] for a in env.http.get("/api/status").json()["accounts"]]
+
+    env.app.start()
+    try:
+        wait_for(lambda: bool(env.app.store.search("invoice")), "the first sync did not happen")
+        assert status_accounts() == ["work"]
+
+        fake.add_account("home", "robin@home.example", "Robin Tester")
+        fake.add_message(
+            "home",
+            "INBOX",
+            make_message(sender=KIM, subject="Allotment rota", text="Your turn on Saturday.\n"),
+            internal_date=NOW - timedelta(hours=2),
+        )
+        wait_for(
+            lambda: bool(env.app.store.search("allotment")),
+            "mail of the added account was not synced",
+        )
+        assert status_accounts() == ["work", "home"]
+
+        fake.remove_account("work")
+        wait_for(
+            lambda: not env.app.store.search("invoice"),
+            "mail of the removed account stayed in the cache",
+        )
+        assert status_accounts() == ["home"]
+        assert env.app.store.search("allotment")
+    finally:
+        env.app.close()
 
 
 def test_background_threads_sync_and_analyse(tmp_path: Path, fake: FakeGateway) -> None:

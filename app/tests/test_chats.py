@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,9 @@ def test_keys_round_trip_and_reject_garbage() -> None:
 def test_conversations_and_items(chats: ChatStore, tmp_path: Path) -> None:
     first = chats.create()
     second = chats.create("Second")
+    # Times are stored in milliseconds, and conversations used in the same millisecond are
+    # listed newest first; make sure that the first one really is used later than that.
+    time.sleep(0.005)
     item = chats.add_item(first.id, "user", "Hello")
     chats.add_item(
         first.id,
